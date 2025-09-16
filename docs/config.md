@@ -576,7 +576,7 @@ This is analogous to `model_context_window`, but for the maximum number of outpu
 
 ## project_doc_max_bytes
 
-Maximum number of bytes to read from an `AGENTS.md` file to include in the instructions sent with the first turn of a session. Defaults to 32 KiB.
+Maximum number of bytes to read from an `AGENTS.md` file to include in the instructions sent with the first turn of a session. Defaults to unlimited (set to `0` to disable project docs entirely or to a smaller value to impose a cap).
 
 ## tui
 
@@ -630,7 +630,7 @@ notifications = [ "agent-turn-complete", "approval-requested" ]
 | `model_providers.<id>.request_max_retries` | number | Per‑provider HTTP retry count (default: 4). |
 | `model_providers.<id>.stream_max_retries` | number | SSE stream retry count (default: 5). |
 | `model_providers.<id>.stream_idle_timeout_ms` | number | SSE idle timeout (ms) (default: 300000). |
-| `project_doc_max_bytes` | number | Max bytes to read from `AGENTS.md`. |
+| `project_doc_max_bytes` | number | Max bytes to read from `AGENTS.md` (defaults to unlimited; set to `0` to disable). |
 | `profile` | string | Active profile name. |
 | `profiles.<name>.*` | various | Profile‑scoped overrides of the same keys. |
 | `history.persistence` | `save-all` \| `none` | History file persistence (default: `save-all`). |

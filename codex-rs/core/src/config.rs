@@ -42,10 +42,11 @@ const OPENAI_DEFAULT_REVIEW_MODEL: &str = "gpt-5";
 pub(crate) const DEFAULT_AUTO_CHECKPOINT_KEEP: usize = 5;
 pub const GPT_5_CODEX_MEDIUM_MODEL: &str = "gpt-5-codex";
 
-/// Maximum number of bytes of the documentation that will be embedded. Larger
-/// files are *silently truncated* to this size so we do not take up too much of
-/// the context window.
-pub(crate) const PROJECT_DOC_MAX_BYTES: usize = 32 * 1024; // 32 KiB
+/// Maximum number of bytes of the documentation that will be embedded by
+/// default. We now use an effectively unlimited budget so the entire
+/// `AGENTS.md` contents are included unless the user explicitly overrides this
+/// value (for example, to disable project docs by setting it to zero).
+pub(crate) const PROJECT_DOC_MAX_BYTES: usize = usize::MAX;
 
 pub(crate) const CONFIG_TOML_FILE: &str = "config.toml";
 
