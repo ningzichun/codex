@@ -1104,6 +1104,7 @@ mod tests {
     use codex_core::protocol::Op;
     use codex_core::protocol::SessionConfiguredEvent;
     use codex_protocol::mcp_protocol::ConversationId;
+    use ratatui::style::Stylize;
     use ratatui::text::Line;
     use std::fs;
     use std::path::PathBuf;
@@ -1182,6 +1183,14 @@ mod tests {
         text.to_string().into()
     }
 
+    fn user_header() -> Line<'static> {
+        "user".cyan().bold().into()
+    }
+
+    fn assistant_header() -> Line<'static> {
+        "assistant".magenta().bold().into()
+    }
+
     fn line_to_string(line: &Line<'_>) -> String {
         line.spans
             .iter()
@@ -1217,10 +1226,10 @@ mod tests {
         drain_ops(&mut op_rx);
 
         app.transcript_lines = vec![
-            line("user"),
+            user_header(),
             line("question to drop"),
             line(""),
-            line("assistant"),
+            assistant_header(),
             line("an answer"),
             line(""),
         ];
@@ -1253,10 +1262,10 @@ mod tests {
         drain_ops(&mut op_rx);
 
         app.transcript_lines = vec![
-            line("user"),
+            user_header(),
             line("retry this please"),
             line(""),
-            line("assistant"),
+            assistant_header(),
             line("earlier answer"),
             line(""),
         ];
@@ -1344,10 +1353,10 @@ mod tests {
     fn export_transcript_writes_markdown_snapshot() {
         let (mut app, mut event_rx, _op_rx) = make_test_app_with_channels();
         app.transcript_lines = vec![
-            line("user"),
+            user_header(),
             line("export this message"),
             line(""),
-            line("assistant"),
+            assistant_header(),
             line("response body"),
             line(""),
         ];

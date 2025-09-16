@@ -1,3 +1,4 @@
+use ratatui::style::Style;
 use ratatui::text::Line;
 
 /// Convenience: compute the highlight range for the Nth last user message.
@@ -62,67 +63,111 @@ pub(crate) fn normalize_backtrack_n(lines: &[Line<'_>], n: usize) -> usize {
 /// until the first blank line.
 pub(crate) fn nth_last_user_text(lines: &[Line<'_>], n: usize) -> Option<String> {
     let header_idx = find_nth_last_user_header_index(lines, n)?;
-    extract_message_text_after_header(lines, header_idx)
+    let body = message_body_lines(lines, header_idx);
+    if body.is_empty() {
+        None
+    } else {
+        Some(body.join("\n"))
+    }
 }
 
 /// Extract message text starting after `header_idx` until the first blank line.
-fn extract_message_text_after_header(lines: &[Line<'_>], header_idx: usize) -> Option<String> {
-    let start = header_idx + 1;
-    let mut out: Vec<String> = Vec::new();
-    for line in lines.iter().skip(start) {
-        let is_blank = line
-            .spans
-            .iter()
-            .all(|s| s.content.as_ref().trim().is_empty());
-        if is_blank {
+fn message_body_lines(lines: &[Line<'_>], header_idx: usize) -> Vec<String> {
+    let mut body: Vec<String> = Vec::new();
+    let mut pending_blanks: usize = 0;
+    let mut ended_by_header = false;
+
+    for line in lines.iter().skip(header_idx + 1) {
+        if is_header_line(line) {
+            ended_by_header = true;
             break;
         }
-        let text: String = line
+
+        if is_blank_line(line) {
+            pending_blanks += 1;
+            continue;
+        }
+
+        for _ in 0..pending_blanks {
+            body.push(String::new());
+        }
+        pending_blanks = 0;
+
+        let text = line
             .spans
             .iter()
             .map(|s| s.content.as_ref())
-            .collect::<Vec<_>>()
-            .join("");
-        out.push(text);
+            .collect::<String>();
+        body.push(text);
     }
-    if out.is_empty() {
-        None
-    } else {
-        Some(out.join("\n"))
+
+    if !ended_by_header {
+        for _ in 0..pending_blanks {
+            body.push(String::new());
+        }
     }
+
+    body
+}
+
+fn is_blank_line(line: &Line<'_>) -> bool {
+    line.spans
+        .iter()
+        .all(|s| s.content.as_ref().trim().is_empty())
+}
+
+fn is_header_line(line: &Line<'_>) -> bool {
+    let Some(first) = line.spans.first() else {
+        return false;
+    };
+
+    let text = first.content.as_ref().trim();
+    if text.is_empty() {
+        return false;
+    }
+
+    if matches!(text, "user" | "codex") && first.style != Style::default() {
+        return true;
+    }
+
+    if first.style != Style::default() {
+        return true;
+    }
+
+    line.spans.len() > 1
 }
 
 /// Given a header index, return the inclusive range for the message block
 /// [header_idx, end) where end is the first blank line after the header or the
 /// end of the transcript.
 fn highlight_range_from_header(lines: &[Line<'_>], header_idx: usize) -> (usize, usize) {
-    let mut end = header_idx + 1;
-    while end < lines.len() {
-        let is_blank = lines[end]
-            .spans
-            .iter()
-            .all(|s| s.content.as_ref().trim().is_empty());
-        if is_blank {
-            break;
-        }
-        end += 1;
-    }
+    let body_len = message_body_lines(lines, header_idx).len();
+    let end = (header_idx + 1 + body_len).min(lines.len());
     (header_idx, end)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ratatui::style::Stylize;
 
     fn line(s: &str) -> Line<'static> {
         s.to_string().into()
+    }
+
+    fn user_header() -> Line<'static> {
+        "user".cyan().bold().into()
+    }
+
+    fn codex_header() -> Line<'static> {
+        "codex".magenta().bold().into()
     }
 
     fn transcript_with_users(count: usize) -> Vec<Line<'static>> {
         // Build a transcript with `count` user messages, each followed by one body line and a blank line.
         let mut v = Vec::new();
         for i in 0..count {
-            v.push(line("user"));
+            v.push(user_header());
             v.push(line(&format!("message {i}")));
             v.push(line(""));
         }
@@ -149,5 +194,40 @@ mod tests {
     fn normalize_keeps_valid_n() {
         let lines = transcript_with_users(3);
         assert_eq!(normalize_backtrack_n(&lines, 2), 2);
+    }
+
+    #[test]
+    fn nth_last_user_text_preserves_blank_lines() {
+        let lines = vec![
+            user_header(),
+            line("1 2 3 4 5"),
+            line("6 7"),
+            line(""),
+            line("8 9"),
+            line(""),
+            line("10"),
+            Line::from(""),
+            codex_header(),
+        ];
+
+        let text = nth_last_user_text(&lines, 1).expect("message");
+        assert_eq!(text, "1 2 3 4 5\n6 7\n\n8 9\n\n10");
+    }
+
+    #[test]
+    fn highlight_range_includes_lines_after_blank() {
+        let lines = vec![
+            user_header(),
+            line("alpha"),
+            line("beta"),
+            line(""),
+            line("gamma"),
+            Line::from(""),
+            codex_header(),
+        ];
+
+        let (start, end) = highlight_range_for_nth_last_user(&lines, 1).expect("range");
+        assert_eq!(start, 0);
+        assert_eq!(end, 5);
     }
 }
