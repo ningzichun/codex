@@ -301,7 +301,7 @@ impl App {
     }
 
     /// Thin wrapper around ConversationManager::fork_conversation.
-    async fn perform_fork(
+    pub(crate) async fn perform_fork(
         &self,
         path: PathBuf,
         drop_count: usize,
@@ -311,7 +311,7 @@ impl App {
     }
 
     /// Install a forked conversation into the ChatWidget and update UI to reflect selection.
-    fn install_forked_conversation(
+    pub(crate) fn install_forked_conversation(
         &mut self,
         tui: &mut tui::Tui,
         cfg: codex_core::config::Config,
