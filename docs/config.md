@@ -630,6 +630,7 @@ notifications = [ "agent-turn-complete", "approval-requested" ]
 | `profiles.<name>.*` | various | Profile‑scoped overrides of the same keys. |
 | `history.persistence` | `save-all` \| `none` | History file persistence (default: `save-all`). |
 | `history.max_bytes` | number | Currently ignored (not enforced). |
+| `auto_checkpoint_keep` | number | Automatically retain this many recent checkpoints (default: `5`; set to `0` to disable). |
 | `file_opener` | `vscode` \| `vscode-insiders` \| `windsurf` \| `cursor` \| `none` | URI scheme for clickable citations (default: `vscode`). |
 | `tui` | table | TUI‑specific options. |
 | `tui.notifications` | boolean \| array<string> | Enable desktop notifications in the tui (default: false). |
