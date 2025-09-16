@@ -32,6 +32,9 @@ pub(crate) enum AppEvent {
     /// Save the current conversation state to a checkpoint file.
     SaveCheckpoint,
 
+    /// Request to create an automatic checkpoint after a completed turn.
+    TriggerAutoCheckpoint,
+
     /// Present a picker for loading a previously saved checkpoint.
     OpenLoadSaves,
 

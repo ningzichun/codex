@@ -39,6 +39,7 @@ use toml_edit::Table as TomlTable;
 
 const OPENAI_DEFAULT_MODEL: &str = "gpt-5";
 const OPENAI_DEFAULT_REVIEW_MODEL: &str = "gpt-5";
+pub(crate) const DEFAULT_AUTO_CHECKPOINT_KEEP: usize = 5;
 pub const GPT_5_CODEX_MEDIUM_MODEL: &str = "gpt-5-codex";
 
 /// Maximum number of bytes of the documentation that will be embedded. Larger
@@ -139,6 +140,10 @@ pub struct Config {
     /// Directory containing all Codex state (defaults to `~/.codex` but can be
     /// overridden by the `CODEX_HOME` environment variable).
     pub codex_home: PathBuf,
+
+    /// Number of automatic checkpoints to retain. When set to 0, auto
+    /// checkpoints are disabled.
+    pub auto_checkpoint_keep: usize,
 
     /// Settings that govern if and what will be written to `~/.codex/history.jsonl`.
     pub history: History,
@@ -661,6 +666,9 @@ pub struct ConfigToml {
     #[serde(default)]
     pub history: Option<History>,
 
+    /// Number of automatic checkpoints to retain.
+    pub auto_checkpoint_keep: Option<usize>,
+
     /// Optional URI-based file opener. If set, citations to files in the model
     /// output will be hyperlinked using the specified URI scheme.
     pub file_opener: Option<UriBasedFileOpener>,
@@ -1053,6 +1061,9 @@ impl Config {
                 .as_ref()
                 .map(|t| t.notifications.clone())
                 .unwrap_or_default(),
+            auto_checkpoint_keep: cfg
+                .auto_checkpoint_keep
+                .unwrap_or(DEFAULT_AUTO_CHECKPOINT_KEEP),
         };
         Ok(config)
     }
@@ -1616,6 +1627,7 @@ model_verbosity = "high"
                 include_view_image_tool: true,
                 active_profile: Some("o3".to_string()),
                 disable_paste_burst: false,
+                auto_checkpoint_keep: DEFAULT_AUTO_CHECKPOINT_KEEP,
                 tui_notifications: Default::default(),
             },
             o3_profile_config
@@ -1674,6 +1686,7 @@ model_verbosity = "high"
             include_view_image_tool: true,
             active_profile: Some("gpt3".to_string()),
             disable_paste_burst: false,
+            auto_checkpoint_keep: DEFAULT_AUTO_CHECKPOINT_KEEP,
             tui_notifications: Default::default(),
         };
 
@@ -1747,6 +1760,7 @@ model_verbosity = "high"
             include_view_image_tool: true,
             active_profile: Some("zdr".to_string()),
             disable_paste_burst: false,
+            auto_checkpoint_keep: DEFAULT_AUTO_CHECKPOINT_KEEP,
             tui_notifications: Default::default(),
         };
 
@@ -1806,6 +1820,7 @@ model_verbosity = "high"
             include_view_image_tool: true,
             active_profile: Some("gpt5".to_string()),
             disable_paste_burst: false,
+            auto_checkpoint_keep: DEFAULT_AUTO_CHECKPOINT_KEEP,
             tui_notifications: Default::default(),
         };
 

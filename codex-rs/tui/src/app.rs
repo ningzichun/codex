@@ -30,6 +30,7 @@ use crossterm::terminal::supports_keyboard_enhancement;
 use ratatui::style::Stylize;
 use ratatui::text::Line;
 use std::io::ErrorKind;
+use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
@@ -69,6 +70,7 @@ pub(crate) struct App {
     pub(crate) backtrack: crate::app_backtrack::BacktrackState,
 
     pending_history_request: Option<HistoryRequest>,
+    queued_auto_checkpoint: Option<AutoCheckpointRequest>,
 }
 
 impl App {
@@ -148,6 +150,7 @@ impl App {
             commit_anim_running: Arc::new(AtomicBool::new(false)),
             backtrack: BacktrackState::default(),
             pending_history_request: None,
+            queued_auto_checkpoint: None,
         };
 
         let tui_events = tui.event_stream();
@@ -223,6 +226,7 @@ impl App {
                     auth_manager: self.auth_manager.clone(),
                 };
                 self.chat_widget = ChatWidget::new(init, self.server.clone());
+                self.clear_auto_checkpoint_queue();
                 tui.frame_requester().schedule_frame();
             }
             AppEvent::InsertHistoryCell(cell) => {
@@ -299,6 +303,9 @@ impl App {
             }
             AppEvent::SaveCheckpoint => {
                 self.handle_save_checkpoint().await?;
+            }
+            AppEvent::TriggerAutoCheckpoint => {
+                self.queue_auto_checkpoint();
             }
             AppEvent::OpenLoadSaves => {
                 self.open_load_saves_popup().await?;
@@ -544,6 +551,40 @@ impl App {
         Ok(())
     }
 
+    fn queue_auto_checkpoint(&mut self) {
+        if self.config.auto_checkpoint_keep == 0 {
+            return;
+        }
+
+        let Some(conversation_id) = self.chat_widget.conversation_id() else {
+            return;
+        };
+
+        let target = self.generate_auto_save_path(&conversation_id);
+        self.queued_auto_checkpoint = Some(AutoCheckpointRequest {
+            conversation_id,
+            target,
+        });
+        self.try_start_auto_checkpoint();
+    }
+
+    fn try_start_auto_checkpoint(&mut self) {
+        if self.pending_history_request.is_some() {
+            return;
+        }
+        if let Some(request) = self.queued_auto_checkpoint.take() {
+            self.pending_history_request = Some(HistoryRequest::AutoSave {
+                conversation_id: request.conversation_id,
+                target: request.target,
+            });
+            self.chat_widget.submit_op(Op::GetPath);
+        }
+    }
+
+    pub(crate) fn clear_auto_checkpoint_queue(&mut self) {
+        self.queued_auto_checkpoint = None;
+    }
+
     async fn export_transcript(&mut self) -> Result<()> {
         let now = Utc::now();
         let filename = format!(
@@ -595,13 +636,26 @@ impl App {
         let items: Vec<SelectionItem> = saves
             .into_iter()
             .map(|entry| {
-                let path = entry.path.clone();
+                let SaveEntry {
+                    path,
+                    display,
+                    description,
+                    kind,
+                    ..
+                } = entry;
+                let path_for_action = path;
                 let actions: Vec<SelectionAction> = vec![Box::new(move |tx| {
-                    tx.send(AppEvent::LoadSavedConversation { path: path.clone() });
+                    tx.send(AppEvent::LoadSavedConversation {
+                        path: path_for_action.clone(),
+                    });
                 })];
+                let mut name = display;
+                if kind == SaveEntryKind::Auto {
+                    name = format!("[Auto] {name}");
+                }
                 SelectionItem {
-                    name: entry.display,
-                    description: entry.description,
+                    name,
+                    description,
                     is_current: false,
                     actions,
                 }
@@ -660,6 +714,7 @@ impl App {
         self.has_emitted_history_lines = false;
         self.overlay = None;
         self.backtrack = BacktrackState::default();
+        self.clear_auto_checkpoint_queue();
         tui.frame_requester().schedule_frame();
 
         self.chat_widget
@@ -696,7 +751,11 @@ impl App {
             HistoryRequest::Save { target, .. } => {
                 self.handle_history_save(ev, target).await?;
             }
+            HistoryRequest::AutoSave { target, .. } => {
+                self.handle_history_auto_save(ev, target).await?;
+            }
         }
+        self.try_start_auto_checkpoint();
         Ok(true)
     }
 
@@ -772,6 +831,87 @@ impl App {
         Ok(())
     }
 
+    async fn handle_history_auto_save(
+        &mut self,
+        ev: &codex_core::protocol::ConversationPathResponseEvent,
+        target: PathBuf,
+    ) -> Result<()> {
+        if self.config.auto_checkpoint_keep == 0 {
+            return Ok(());
+        }
+
+        if let Some(parent) = target.parent()
+            && let Err(err) = tokio::fs::create_dir_all(parent).await
+        {
+            tracing::error!(
+                "failed to create auto checkpoint directory {}: {err}",
+                parent.display()
+            );
+            return Ok(());
+        }
+
+        match tokio::fs::copy(&ev.path, &target).await {
+            Ok(_) => {
+                if let Err(err) = self.prune_old_auto_checkpoints().await {
+                    tracing::error!("failed to prune auto checkpoints: {err:?}");
+                }
+            }
+            Err(err) => {
+                self.chat_widget.add_error_message(format!(
+                    "Failed to write auto checkpoint {}: {err}",
+                    target.display()
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    async fn prune_old_auto_checkpoints(&mut self) -> Result<()> {
+        if self.config.auto_checkpoint_keep == 0 {
+            return Ok(());
+        }
+
+        let mut dir = self.config.codex_home.clone();
+        dir.push("saves");
+
+        let mut autos: Vec<(SystemTime, PathBuf)> = Vec::new();
+        match tokio::fs::read_dir(&dir).await {
+            Ok(mut rd) => {
+                while let Some(entry) = rd.next_entry().await? {
+                    let path = entry.path();
+                    if !path.is_file() {
+                        continue;
+                    }
+                    if !is_auto_checkpoint_path(&path) {
+                        continue;
+                    }
+                    let metadata = entry.metadata().await?;
+                    let modified = metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH);
+                    autos.push((modified, path));
+                }
+            }
+            Err(err) if err.kind() == ErrorKind::NotFound => {
+                return Ok(());
+            }
+            Err(err) => {
+                return Err(err.into());
+            }
+        }
+
+        autos.sort_by(|a, b| b.0.cmp(&a.0));
+        for (_, path) in autos.into_iter().skip(self.config.auto_checkpoint_keep) {
+            if let Err(err) = tokio::fs::remove_file(&path).await
+                && err.kind() != ErrorKind::NotFound
+            {
+                self.chat_widget.add_error_message(format!(
+                    "Failed to prune auto checkpoint {}: {err}",
+                    path.display()
+                ));
+            }
+        }
+        Ok(())
+    }
+
     fn collect_transcript_lines(&self) -> Vec<String> {
         self.transcript_lines
             .iter()
@@ -798,6 +938,19 @@ impl App {
         dir.join(filename)
     }
 
+    fn generate_auto_save_path(&self, conversation_id: &ConversationId) -> PathBuf {
+        let mut dir = self.config.codex_home.clone();
+        dir.push("saves");
+        let sanitized = sanitize_filename_component(&conversation_id.to_string());
+        let now = Utc::now();
+        let filename = format!(
+            "autosave-{}{:03}-{sanitized}.jsonl",
+            now.format("%Y%m%d-%H%M%S"),
+            now.timestamp_subsec_millis()
+        );
+        dir.join(filename)
+    }
+
     async fn list_saved_checkpoints(&self) -> Result<Vec<SaveEntry>> {
         let mut dir = self.config.codex_home.clone();
         dir.push("saves");
@@ -815,21 +968,33 @@ impl App {
                     }
                     let metadata = entry.metadata().await?;
                     let modified = metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH);
+                    let kind = if is_auto_checkpoint_path(&path) {
+                        SaveEntryKind::Auto
+                    } else {
+                        SaveEntryKind::Manual
+                    };
                     let display_name = path
                         .file_name()
                         .and_then(|s| s.to_str())
                         .unwrap_or_default()
                         .to_string();
                     let timestamp = chrono::DateTime::<Utc>::from(modified);
-                    let description = Some(format!(
-                        "Modified {}",
-                        timestamp.format("%Y-%m-%d %H:%M:%S UTC")
-                    ));
+                    let description = match kind {
+                        SaveEntryKind::Auto => Some(format!(
+                            "Autosave • Modified {}",
+                            timestamp.format("%Y-%m-%d %H:%M:%S UTC")
+                        )),
+                        SaveEntryKind::Manual => Some(format!(
+                            "Modified {}",
+                            timestamp.format("%Y-%m-%d %H:%M:%S UTC")
+                        )),
+                    };
                     entries.push(SaveEntry {
                         path,
                         display: display_name,
                         description,
                         modified,
+                        kind,
                     });
                 }
             }
@@ -859,11 +1024,30 @@ fn sanitize_filename_component(input: &str) -> String {
         .collect()
 }
 
+fn is_auto_checkpoint_path(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|s| s.to_str())
+        .map(|name| name.starts_with("autosave-"))
+        .unwrap_or(false)
+}
+
 struct SaveEntry {
     path: PathBuf,
     display: String,
     description: Option<String>,
     modified: SystemTime,
+    kind: SaveEntryKind,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SaveEntryKind {
+    Manual,
+    Auto,
+}
+
+struct AutoCheckpointRequest {
+    conversation_id: ConversationId,
+    target: PathBuf,
 }
 
 enum HistoryRequest {
@@ -880,6 +1064,10 @@ enum HistoryRequest {
         conversation_id: ConversationId,
         target: PathBuf,
     },
+    AutoSave {
+        conversation_id: ConversationId,
+        target: PathBuf,
+    },
 }
 
 impl HistoryRequest {
@@ -892,6 +1080,9 @@ impl HistoryRequest {
                 conversation_id, ..
             }
             | HistoryRequest::Save {
+                conversation_id, ..
+            }
+            | HistoryRequest::AutoSave {
                 conversation_id, ..
             } => conversation_id,
         }
@@ -949,6 +1140,7 @@ mod tests {
             commit_anim_running: Arc::new(AtomicBool::new(false)),
             backtrack: BacktrackState::default(),
             pending_history_request: None,
+            queued_auto_checkpoint: None,
         };
 
         (app, rx, op_rx)
@@ -1112,6 +1304,37 @@ mod tests {
 
         assert!(target.starts_with(temp_dir.path()));
         assert!(target.extension().and_then(|s| s.to_str()) == Some("jsonl"));
+
+        let op = op_rx.try_recv().expect("expected GetPath op");
+        assert!(matches!(op, Op::GetPath));
+    }
+
+    #[test]
+    fn auto_checkpoint_sets_pending_request() {
+        let (mut app, mut event_rx, mut op_rx) = make_test_app_with_channels();
+        let conversation_id = ConversationId::new();
+        let _rollout = configure_session(&mut app, conversation_id);
+        drain_app_events(&mut event_rx);
+        drain_ops(&mut op_rx);
+
+        app.config.auto_checkpoint_keep = 3;
+        app.queue_auto_checkpoint();
+
+        match app.pending_history_request {
+            Some(HistoryRequest::AutoSave {
+                conversation_id: id,
+                ref target,
+            }) => {
+                assert_eq!(id, conversation_id);
+                let file_name = target
+                    .file_name()
+                    .and_then(|s| s.to_str())
+                    .expect("auto save filename");
+                assert!(file_name.starts_with("autosave-"));
+                assert_eq!(target.extension().and_then(|s| s.to_str()), Some("jsonl"));
+            }
+            _ => panic!("expected auto save request"),
+        }
 
         let op = op_rx.try_recv().expect("expected GetPath op");
         assert!(matches!(op, Op::GetPath));

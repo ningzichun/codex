@@ -335,6 +335,7 @@ impl App {
         // Trim transcript up to the selected user message and re-render it.
         self.trim_transcript_for_backtrack(drop_count);
         self.render_transcript_once(tui);
+        self.clear_auto_checkpoint_queue();
         if !prefill.is_empty() {
             self.chat_widget.set_composer_text(prefill.to_string());
         }

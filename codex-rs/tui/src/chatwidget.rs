@@ -272,6 +272,7 @@ impl ChatWidget {
         self.maybe_send_next_queued_input();
         // Emit a notification when the turn completes (suppressed if focused).
         self.notify(Notification::AgentTurnComplete);
+        self.app_event_tx.send(AppEvent::TriggerAutoCheckpoint);
     }
 
     pub(crate) fn set_token_info(&mut self, info: Option<TokenUsageInfo>) {
