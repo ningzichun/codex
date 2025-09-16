@@ -1,52 +1,74 @@
 # Release workflow for codex-rs.
-# To release, follow a workflow like:
-# ```
-# git tag -a rust-v0.1.0 -m "Release 0.1.0"
-# git push origin rust-v0.1.0
-# ```
+# Trigger this workflow manually to build and publish a release tagged with today's date.
 
 name: rust-release
 on:
-  push:
-    tags:
-      - "rust-v*.*.*"
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Branch, tag, or commit to release"
+        required: false
+        default: main
 
 concurrency:
   group: ${{ github.workflow }}
   cancel-in-progress: true
 
 jobs:
-  tag-check:
+  prepare:
     runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+      tag: ${{ steps.meta.outputs.tag }}
+      sha: ${{ steps.capture.outputs.sha }}
     steps:
-      - uses: actions/checkout@v5
+      - name: Checkout repository
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          ref: ${{ inputs.ref }}
 
-      - name: Validate tag matches Cargo.toml version
-        shell: bash
+      - name: Capture release commit
+        id: capture
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Determine release metadata
+        id: meta
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_SHA: ${{ steps.capture.outputs.sha }}
         run: |
           set -euo pipefail
-          echo "::group::Tag validation"
+          version="$(date -u +%Y.%m.%d)"
+          tag="rust-v${version}"
+          if existing_sha=$(gh api repos/${GITHUB_REPOSITORY}/git/refs/tags/${tag} --jq .object.sha 2>/dev/null); then
+            if [[ "${existing_sha}" != "${RELEASE_SHA}" ]]; then
+              echo "Tag ${tag} already exists and points to ${existing_sha} (expected ${RELEASE_SHA})." >&2
+              exit 1
+            fi
+            echo "Tag ${tag} already exists and targets ${existing_sha}; reusing it."
+            echo "tag_exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag_exists=false" >> "$GITHUB_OUTPUT"
+          fi
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
 
-          # 1. Must be a tag and match the regex
-          [[ "${GITHUB_REF_TYPE}" == "tag" ]] \
-            || { echo "❌  Not a tag push"; exit 1; }
-          [[ "${GITHUB_REF_NAME}" =~ ^rust-v[0-9]+\.[0-9]+\.[0-9]+(-(alpha|beta)(\.[0-9]+)?)?$ ]] \
-            || { echo "❌  Tag '${GITHUB_REF_NAME}' doesn't match expected format"; exit 1; }
-
-          # 2. Extract versions
-          tag_ver="${GITHUB_REF_NAME#rust-v}"
-          cargo_ver="$(grep -m1 '^version' codex-rs/Cargo.toml \
-                        | sed -E 's/version *= *"([^"]+)".*/\1/')"
-
-          # 3. Compare
-          [[ "${tag_ver}" == "${cargo_ver}" ]] \
-            || { echo "❌  Tag ${tag_ver} ≠ Cargo.toml ${cargo_ver}"; exit 1; }
-
-          echo "✅  Tag and Cargo.toml agree (${tag_ver})"
-          echo "::endgroup::"
+      - name: Create release tag
+        if: steps.meta.outputs.tag_exists != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.meta.outputs.tag }}
+          RELEASE_SHA: ${{ steps.capture.outputs.sha }}
+        run: |
+          set -euo pipefail
+          gh api repos/${GITHUB_REPOSITORY}/git/refs \
+            -X POST \
+            -f ref="refs/tags/${RELEASE_TAG}" \
+            -f sha="${RELEASE_SHA}"
 
   build:
-    needs: tag-check
+    needs: prepare
     name: ${{ matrix.runner }} - ${{ matrix.target }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
@@ -77,6 +99,9 @@ jobs:
 
     steps:
       - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          ref: ${{ needs.prepare.outputs.sha }}
       - uses: dtolnay/rust-toolchain@1.89
         with:
           targets: ${{ matrix.target }}
@@ -164,13 +189,16 @@ jobs:
             codex-rs/dist/${{ matrix.target }}/*
 
   release:
-    needs: build
+    needs: [prepare, build]
     name: release
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          ref: ${{ needs.prepare.outputs.sha }}
 
       - uses: actions/download-artifact@v4
         with:
@@ -181,11 +209,7 @@ jobs:
 
       - name: Define release name
         id: release_name
-        run: |
-          # Extract the version from the tag name, which is in the format
-          # "rust-v0.1.0".
-          version="${GITHUB_REF_NAME#rust-v}"
-          echo "name=${version}" >> $GITHUB_OUTPUT
+        run: echo "name=${{ needs.prepare.outputs.version }}" >> $GITHUB_OUTPUT
 
       - name: Stage npm package
         env:
@@ -207,7 +231,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           name: ${{ steps.release_name.outputs.name }}
-          tag_name: ${{ github.ref_name }}
+          tag_name: ${{ needs.prepare.outputs.tag }}
           files: dist/**
           # Mark as prerelease only when the version has a suffix after x.y.z
           # (e.g. -alpha, -beta). Otherwise publish a normal release.
@@ -217,14 +241,14 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          tag: ${{ github.ref_name }}
+          tag: ${{ needs.prepare.outputs.tag }}
           config: .github/dotslash-config.json
 
   update-branch:
     name: Update latest-alpha-cli branch
     permissions:
       contents: write
-    needs: release
+    needs: [prepare, release]
     runs-on: ubuntu-latest
 
     steps:
@@ -236,5 +260,5 @@ jobs:
           gh api \
             repos/${GITHUB_REPOSITORY}/git/refs/heads/latest-alpha-cli \
             -X PATCH \
-            -f sha="${GITHUB_SHA}" \
+            -f sha="${{ needs.prepare.outputs.sha }}" \
             -F force=true

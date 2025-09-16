@@ -51,6 +51,14 @@ Each archive contains a single entry with the platform baked into the name (e.g.
 
 </details>
 
+#### Installing this fork
+
+This fork publishes releases manually with date-based tags such as `rust-v2024.07.17`. To install it:
+
+1. Run the **rust-release** workflow manually on the commit you want to ship, which will generate a tagged release for that day.
+2. Download the archive for your platform from the new release and place the extracted `codex` binary somewhere on your `PATH` (for example, `/usr/local/bin`).
+3. Run `codex --version` to confirm that the dated build was installed successfully.
+
 ### Using Codex with your ChatGPT plan
 
 <p align="center">
@@ -102,4 +110,3 @@ Codex CLI supports a rich set of configuration options, with preferences stored 
 ## License
 
 This repository is licensed under the [Apache-2.0 License](LICENSE).
-
