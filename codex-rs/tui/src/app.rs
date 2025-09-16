@@ -1,20 +1,26 @@
 use crate::app_backtrack::BacktrackState;
 use crate::app_event::AppEvent;
 use crate::app_event_sender::AppEventSender;
+use crate::backtrack_helpers;
+use crate::bottom_pane::SelectionAction;
+use crate::bottom_pane::SelectionItem;
 use crate::chatwidget::ChatWidget;
 use crate::file_search::FileSearchManager;
 use crate::pager_overlay::Overlay;
 use crate::resume_picker::ResumeSelection;
 use crate::tui;
 use crate::tui::TuiEvent;
+use chrono::Utc;
 use codex_ansi_escape::ansi_escape_line;
 use codex_core::AuthManager;
 use codex_core::ConversationManager;
 use codex_core::config::Config;
 use codex_core::config::persist_model_selection;
 use codex_core::model_family::find_family_for_model;
+use codex_core::protocol::Op;
 use codex_core::protocol::TokenUsage;
 use codex_core::protocol_config_types::ReasoningEffort as ReasoningEffortConfig;
+use codex_protocol::mcp_protocol::ConversationId;
 use color_eyre::eyre::Result;
 use color_eyre::eyre::WrapErr;
 use crossterm::event::KeyCode;
@@ -23,12 +29,14 @@ use crossterm::event::KeyEventKind;
 use crossterm::terminal::supports_keyboard_enhancement;
 use ratatui::style::Stylize;
 use ratatui::text::Line;
+use std::io::ErrorKind;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 use std::thread;
 use std::time::Duration;
+use std::time::SystemTime;
 use tokio::select;
 use tokio::sync::mpsc::unbounded_channel;
 // use uuid::Uuid;
@@ -59,6 +67,8 @@ pub(crate) struct App {
 
     // Esc-backtracking state grouped
     pub(crate) backtrack: crate::app_backtrack::BacktrackState,
+
+    pending_history_request: Option<HistoryRequest>,
 }
 
 impl App {
@@ -137,6 +147,7 @@ impl App {
             has_emitted_history_lines: false,
             commit_anim_running: Arc::new(AtomicBool::new(false)),
             backtrack: BacktrackState::default(),
+            pending_history_request: None,
         };
 
         let tui_events = tui.event_stream();
@@ -269,10 +280,31 @@ impl App {
                 self.chat_widget.handle_codex_event(event);
             }
             AppEvent::ConversationHistory(ev) => {
+                if self.try_handle_pending_history_request(tui, &ev).await? {
+                    continue;
+                }
                 self.on_conversation_history_for_backtrack(tui, ev).await?;
             }
             AppEvent::ExitRequest => {
                 return Ok(false);
+            }
+            AppEvent::PopLastTurn => {
+                self.handle_pop_last_turn().await?;
+            }
+            AppEvent::RetryLastTurn => {
+                self.handle_retry_last_turn().await?;
+            }
+            AppEvent::ExportTranscript => {
+                self.export_transcript().await?;
+            }
+            AppEvent::SaveCheckpoint => {
+                self.handle_save_checkpoint().await?;
+            }
+            AppEvent::OpenLoadSaves => {
+                self.open_load_saves_popup().await?;
+            }
+            AppEvent::LoadSavedConversation { path } => {
+                self.load_saved_conversation(tui, path).await?;
             }
             AppEvent::CodexOp(op) => self.chat_widget.submit_op(op),
             AppEvent::DiffResult(text) => {
@@ -418,6 +450,452 @@ impl App {
             }
         };
     }
+
+    async fn handle_pop_last_turn(&mut self) -> Result<()> {
+        if self.pending_history_request.is_some() {
+            self.chat_widget
+                .add_error_message("Another history operation is already in progress.".to_string());
+            return Ok(());
+        }
+
+        let Some(conversation_id) = self.chat_widget.conversation_id() else {
+            self.chat_widget
+                .add_error_message("No active conversation to pop.".to_string());
+            return Ok(());
+        };
+
+        if backtrack_helpers::find_nth_last_user_header_index(&self.transcript_lines, 1).is_none() {
+            self.chat_widget
+                .add_info_message("No user turns to remove.".to_string(), None);
+            return Ok(());
+        }
+
+        self.pending_history_request = Some(HistoryRequest::Pop {
+            conversation_id,
+            drop_count: 1,
+        });
+        self.chat_widget.submit_op(Op::GetPath);
+        Ok(())
+    }
+
+    async fn handle_retry_last_turn(&mut self) -> Result<()> {
+        if self.pending_history_request.is_some() {
+            self.chat_widget
+                .add_error_message("Another history operation is already in progress.".to_string());
+            return Ok(());
+        }
+
+        let Some(conversation_id) = self.chat_widget.conversation_id() else {
+            self.chat_widget
+                .add_error_message("No active conversation to retry.".to_string());
+            return Ok(());
+        };
+
+        let Some(message) = backtrack_helpers::nth_last_user_text(&self.transcript_lines, 1) else {
+            self.chat_widget
+                .add_info_message("No previous user message to retry.".to_string(), None);
+            return Ok(());
+        };
+
+        if message.trim().is_empty() {
+            self.chat_widget
+                .add_info_message("Latest user message is empty.".to_string(), None);
+            return Ok(());
+        }
+
+        self.pending_history_request = Some(HistoryRequest::Retry {
+            conversation_id,
+            drop_count: 1,
+            message,
+        });
+        self.chat_widget.submit_op(Op::GetPath);
+        Ok(())
+    }
+
+    async fn handle_save_checkpoint(&mut self) -> Result<()> {
+        if self.pending_history_request.is_some() {
+            self.chat_widget
+                .add_error_message("Another history operation is already in progress.".to_string());
+            return Ok(());
+        }
+
+        let Some(conversation_id) = self.chat_widget.conversation_id() else {
+            self.chat_widget
+                .add_error_message("No active conversation to save.".to_string());
+            return Ok(());
+        };
+
+        let target = self.generate_save_path(&conversation_id);
+        if let Some(parent) = target.parent() {
+            if let Err(err) = tokio::fs::create_dir_all(parent).await {
+                self.chat_widget.add_error_message(format!(
+                    "Failed to create save directory {}: {err}",
+                    parent.display()
+                ));
+                return Ok(());
+            }
+        }
+
+        self.pending_history_request = Some(HistoryRequest::Save {
+            conversation_id,
+            target,
+        });
+        self.chat_widget.submit_op(Op::GetPath);
+        Ok(())
+    }
+
+    async fn export_transcript(&mut self) -> Result<()> {
+        let now = Utc::now();
+        let filename = format!(
+            "codex-export-{}{:03}.md",
+            now.format("%Y%m%d-%H%M%S"),
+            now.timestamp_subsec_millis()
+        );
+        let mut path = std::env::temp_dir();
+        path.push(filename);
+
+        let mut content = String::new();
+        content.push_str("# Codex Transcript Export\n\n");
+        content.push_str(&format!("_Generated {}_\n\n", now.to_rfc3339()));
+        for line in self.collect_transcript_lines() {
+            content.push_str(&line);
+            content.push('\n');
+        }
+
+        match tokio::fs::write(&path, content).await {
+            Ok(_) => {
+                self.chat_widget
+                    .add_info_message(format!("Exported transcript to {}", path.display()), None);
+            }
+            Err(err) => {
+                self.chat_widget.add_error_message(format!(
+                    "Failed to export transcript to {}: {err}",
+                    path.display()
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    async fn open_load_saves_popup(&mut self) -> Result<()> {
+        let saves = match self.list_saved_checkpoints().await {
+            Ok(saves) => saves,
+            Err(err) => {
+                self.chat_widget
+                    .add_error_message(format!("Failed to list saved checkpoints: {err}"));
+                return Ok(());
+            }
+        };
+        if saves.is_empty() {
+            self.chat_widget
+                .add_info_message("No saved checkpoints found.".to_string(), None);
+            return Ok(());
+        }
+
+        let items: Vec<SelectionItem> = saves
+            .into_iter()
+            .map(|entry| {
+                let path = entry.path.clone();
+                let actions: Vec<SelectionAction> = vec![Box::new(move |tx| {
+                    tx.send(AppEvent::LoadSavedConversation { path: path.clone() });
+                })];
+                SelectionItem {
+                    name: entry.display,
+                    description: entry.description,
+                    is_current: false,
+                    actions,
+                }
+            })
+            .collect();
+
+        self.chat_widget.open_saved_sessions_popup(
+            "Load saved session".to_string(),
+            Some("Select a checkpoint to resume.".to_string()),
+            Some("Press Enter to load or Esc to cancel".to_string()),
+            items,
+        );
+        Ok(())
+    }
+
+    async fn load_saved_conversation(&mut self, tui: &mut tui::Tui, path: PathBuf) -> Result<()> {
+        if let Err(err) = tokio::fs::metadata(&path).await {
+            self.chat_widget.add_error_message(format!(
+                "Saved checkpoint {} is not accessible: {err}",
+                path.display()
+            ));
+            return Ok(());
+        }
+
+        let resumed = match self
+            .server
+            .resume_conversation_from_rollout(
+                self.config.clone(),
+                path.clone(),
+                self.auth_manager.clone(),
+            )
+            .await
+        {
+            Ok(resumed) => resumed,
+            Err(err) => {
+                self.chat_widget
+                    .add_error_message(format!("Failed to load checkpoint: {err}"));
+                return Ok(());
+            }
+        };
+
+        let init = crate::chatwidget::ChatWidgetInit {
+            config: self.config.clone(),
+            frame_requester: tui.frame_requester(),
+            app_event_tx: self.app_event_tx.clone(),
+            initial_prompt: None,
+            initial_images: Vec::new(),
+            enhanced_keys_supported: self.enhanced_keys_supported,
+            auth_manager: self.auth_manager.clone(),
+        };
+
+        self.chat_widget =
+            ChatWidget::new_from_existing(init, resumed.conversation, resumed.session_configured);
+        self.transcript_lines.clear();
+        self.deferred_history_lines.clear();
+        self.has_emitted_history_lines = false;
+        self.overlay = None;
+        self.backtrack = BacktrackState::default();
+        tui.frame_requester().schedule_frame();
+
+        self.chat_widget
+            .add_info_message(format!("Loaded checkpoint {}", path.display()), None);
+        Ok(())
+    }
+
+    async fn try_handle_pending_history_request(
+        &mut self,
+        tui: &mut tui::Tui,
+        ev: &codex_core::protocol::ConversationPathResponseEvent,
+    ) -> Result<bool> {
+        let Some(request) = self.pending_history_request.take() else {
+            return Ok(false);
+        };
+
+        if request.conversation_id() != &ev.conversation_id {
+            self.pending_history_request = Some(request);
+            return Ok(false);
+        }
+
+        match request {
+            HistoryRequest::Pop { drop_count, .. } => {
+                self.handle_history_pop(tui, ev, drop_count).await?;
+            }
+            HistoryRequest::Retry {
+                drop_count,
+                message,
+                ..
+            } => {
+                self.handle_history_retry(tui, ev, drop_count, message)
+                    .await?;
+            }
+            HistoryRequest::Save { target, .. } => {
+                self.handle_history_save(ev, target).await?;
+            }
+        }
+        Ok(true)
+    }
+
+    async fn handle_history_pop(
+        &mut self,
+        tui: &mut tui::Tui,
+        ev: &codex_core::protocol::ConversationPathResponseEvent,
+        drop_count: usize,
+    ) -> Result<()> {
+        let cfg = self.chat_widget.config_ref().clone();
+        match self
+            .perform_fork(ev.path.clone(), drop_count, cfg.clone())
+            .await
+        {
+            Ok(new_conv) => {
+                self.install_forked_conversation(tui, cfg, new_conv, drop_count, "");
+                self.chat_widget.add_info_message(
+                    "Removed the latest turn from the conversation context.".to_string(),
+                    None,
+                );
+            }
+            Err(err) => {
+                self.chat_widget
+                    .add_error_message(format!("Failed to pop last turn: {err}"));
+            }
+        }
+        Ok(())
+    }
+
+    async fn handle_history_retry(
+        &mut self,
+        tui: &mut tui::Tui,
+        ev: &codex_core::protocol::ConversationPathResponseEvent,
+        drop_count: usize,
+        message: String,
+    ) -> Result<()> {
+        let cfg = self.chat_widget.config_ref().clone();
+        match self
+            .perform_fork(ev.path.clone(), drop_count, cfg.clone())
+            .await
+        {
+            Ok(new_conv) => {
+                self.install_forked_conversation(tui, cfg, new_conv, drop_count, "");
+                self.chat_widget
+                    .add_info_message("Retrying the latest user message.".to_string(), None);
+                self.chat_widget.submit_text_message(message);
+            }
+            Err(err) => {
+                self.chat_widget
+                    .add_error_message(format!("Failed to retry last turn: {err}"));
+            }
+        }
+        Ok(())
+    }
+
+    async fn handle_history_save(
+        &mut self,
+        ev: &codex_core::protocol::ConversationPathResponseEvent,
+        target: PathBuf,
+    ) -> Result<()> {
+        match tokio::fs::copy(&ev.path, &target).await {
+            Ok(_) => {
+                self.chat_widget
+                    .add_info_message(format!("Saved checkpoint to {}", target.display()), None);
+            }
+            Err(err) => {
+                self.chat_widget.add_error_message(format!(
+                    "Failed to save checkpoint to {}: {err}",
+                    target.display()
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    fn collect_transcript_lines(&self) -> Vec<String> {
+        self.transcript_lines
+            .iter()
+            .chain(self.deferred_history_lines.iter())
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect()
+    }
+
+    fn generate_save_path(&self, conversation_id: &ConversationId) -> PathBuf {
+        let mut dir = self.config.codex_home.clone();
+        dir.push("saves");
+        let sanitized = sanitize_filename_component(conversation_id.as_str());
+        let now = Utc::now();
+        let filename = format!(
+            "save-{}{:03}-{sanitized}.jsonl",
+            now.format("%Y%m%d-%H%M%S"),
+            now.timestamp_subsec_millis()
+        );
+        dir.join(filename)
+    }
+
+    async fn list_saved_checkpoints(&self) -> Result<Vec<SaveEntry>> {
+        let mut dir = self.config.codex_home.clone();
+        dir.push("saves");
+
+        let mut entries: Vec<SaveEntry> = Vec::new();
+        match tokio::fs::read_dir(&dir).await {
+            Ok(mut rd) => {
+                while let Some(entry) = rd.next_entry().await? {
+                    let path = entry.path();
+                    if !path.is_file() {
+                        continue;
+                    }
+                    if path.extension().and_then(|ext| ext.to_str()) != Some("jsonl") {
+                        continue;
+                    }
+                    let metadata = entry.metadata().await?;
+                    let modified = metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH);
+                    let display_name = path
+                        .file_name()
+                        .and_then(|s| s.to_str())
+                        .unwrap_or_default()
+                        .to_string();
+                    let timestamp = chrono::DateTime::<Utc>::from(modified);
+                    let description = Some(format!(
+                        "Modified {}",
+                        timestamp.format("%Y-%m-%d %H:%M:%S UTC")
+                    ));
+                    entries.push(SaveEntry {
+                        path,
+                        display: display_name,
+                        description,
+                        modified,
+                    });
+                }
+            }
+            Err(err) if err.kind() == ErrorKind::NotFound => {
+                return Ok(Vec::new());
+            }
+            Err(err) => {
+                return Err(err.into());
+            }
+        }
+
+        entries.sort_by(|a, b| b.modified.cmp(&a.modified));
+        Ok(entries)
+    }
+}
+
+fn sanitize_filename_component(input: &str) -> String {
+    input
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '-' | '_') {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect()
+}
+
+struct SaveEntry {
+    path: PathBuf,
+    display: String,
+    description: Option<String>,
+    modified: SystemTime,
+}
+
+enum HistoryRequest {
+    Pop {
+        conversation_id: ConversationId,
+        drop_count: usize,
+    },
+    Retry {
+        conversation_id: ConversationId,
+        drop_count: usize,
+        message: String,
+    },
+    Save {
+        conversation_id: ConversationId,
+        target: PathBuf,
+    },
+}
+
+impl HistoryRequest {
+    fn conversation_id(&self) -> &ConversationId {
+        match self {
+            HistoryRequest::Pop {
+                conversation_id, ..
+            }
+            | HistoryRequest::Retry {
+                conversation_id, ..
+            }
+            | HistoryRequest::Save {
+                conversation_id, ..
+            } => conversation_id,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -459,6 +937,7 @@ mod tests {
             enhanced_keys_supported: false,
             commit_anim_running: Arc::new(AtomicBool::new(false)),
             backtrack: BacktrackState::default(),
+            pending_history_request: None,
         }
     }
 
