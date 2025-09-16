@@ -181,6 +181,8 @@ mod tests {
     use std::fs;
     use tempfile::TempDir;
 
+    const UNLIMITED: usize = usize::MAX;
+
     /// Helper that returns a `Config` pointing at `root` and using `limit` as
     /// the maximum number of bytes to embed from AGENTS.md. The caller can
     /// optionally specify a custom `instructions` string – when `None` the
@@ -207,7 +209,7 @@ mod tests {
     async fn no_doc_file_returns_none() {
         let tmp = tempfile::tempdir().expect("tempdir");
 
-        let res = get_user_instructions(&make_config(&tmp, 4096, None)).await;
+        let res = get_user_instructions(&make_config(&tmp, UNLIMITED, None)).await;
         assert!(
             res.is_none(),
             "Expected None when AGENTS.md is absent and no system instructions provided"
@@ -221,7 +223,7 @@ mod tests {
         let tmp = tempfile::tempdir().expect("tempdir");
         fs::write(tmp.path().join("AGENTS.md"), "hello world").unwrap();
 
-        let res = get_user_instructions(&make_config(&tmp, 4096, None))
+        let res = get_user_instructions(&make_config(&tmp, UNLIMITED, None))
             .await
             .expect("doc expected");
 
@@ -248,6 +250,23 @@ mod tests {
         assert_eq!(res, huge[..LIMIT]);
     }
 
+    /// Large files are included in full when the limit is effectively unlimited.
+    #[tokio::test]
+    async fn large_doc_is_not_truncated_with_unlimited_limit() {
+        const LARGE: usize = 64 * 1024;
+        let tmp = tempfile::tempdir().expect("tempdir");
+
+        let huge = "A".repeat(LARGE);
+        fs::write(tmp.path().join("AGENTS.md"), &huge).unwrap();
+
+        let res = get_user_instructions(&make_config(&tmp, UNLIMITED, None))
+            .await
+            .expect("doc expected");
+
+        assert_eq!(res.len(), huge.len(), "doc should not be truncated");
+        assert_eq!(res, huge);
+    }
+
     /// When `cwd` is nested inside a repo, the search should locate AGENTS.md
     /// placed at the repository root (identified by `.git`).
     #[tokio::test]
@@ -269,7 +288,7 @@ mod tests {
         std::fs::create_dir_all(&nested).unwrap();
 
         // Build config pointing at the nested dir.
-        let mut cfg = make_config(&repo, 4096, None);
+        let mut cfg = make_config(&repo, UNLIMITED, None);
         cfg.cwd = nested;
 
         let res = get_user_instructions(&cfg).await.expect("doc expected");
@@ -298,7 +317,7 @@ mod tests {
 
         const INSTRUCTIONS: &str = "base instructions";
 
-        let res = get_user_instructions(&make_config(&tmp, 4096, Some(INSTRUCTIONS)))
+        let res = get_user_instructions(&make_config(&tmp, UNLIMITED, Some(INSTRUCTIONS)))
             .await
             .expect("should produce a combined instruction string");
 
@@ -315,7 +334,7 @@ mod tests {
 
         const INSTRUCTIONS: &str = "some instructions";
 
-        let res = get_user_instructions(&make_config(&tmp, 4096, Some(INSTRUCTIONS))).await;
+        let res = get_user_instructions(&make_config(&tmp, UNLIMITED, Some(INSTRUCTIONS))).await;
 
         assert_eq!(res, Some(INSTRUCTIONS.to_string()));
     }
@@ -341,7 +360,7 @@ mod tests {
         std::fs::create_dir_all(&nested).unwrap();
         fs::write(nested.join("AGENTS.md"), "crate doc").unwrap();
 
-        let mut cfg = make_config(&repo, 4096, None);
+        let mut cfg = make_config(&repo, UNLIMITED, None);
         cfg.cwd = nested;
 
         let res = get_user_instructions(&cfg).await.expect("doc expected");
