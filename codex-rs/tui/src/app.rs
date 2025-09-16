@@ -281,7 +281,7 @@ impl App {
             }
             AppEvent::ConversationHistory(ev) => {
                 if self.try_handle_pending_history_request(tui, &ev).await? {
-                    continue;
+                    return Ok(true);
                 }
                 self.on_conversation_history_for_backtrack(tui, ev).await?;
             }
@@ -526,14 +526,14 @@ impl App {
         };
 
         let target = self.generate_save_path(&conversation_id);
-        if let Some(parent) = target.parent() {
-            if let Err(err) = tokio::fs::create_dir_all(parent).await {
-                self.chat_widget.add_error_message(format!(
-                    "Failed to create save directory {}: {err}",
-                    parent.display()
-                ));
-                return Ok(());
-            }
+        if let Some(parent) = target.parent()
+            && let Err(err) = tokio::fs::create_dir_all(parent).await
+        {
+            self.chat_widget.add_error_message(format!(
+                "Failed to create save directory {}: {err}",
+                parent.display()
+            ));
+            return Ok(());
         }
 
         self.pending_history_request = Some(HistoryRequest::Save {
@@ -788,7 +788,7 @@ impl App {
     fn generate_save_path(&self, conversation_id: &ConversationId) -> PathBuf {
         let mut dir = self.config.codex_home.clone();
         dir.push("saves");
-        let sanitized = sanitize_filename_component(conversation_id.as_str());
+        let sanitized = sanitize_filename_component(&conversation_id.to_string());
         let now = Utc::now();
         let filename = format!(
             "save-{}{:03}-{sanitized}.jsonl",
@@ -902,17 +902,28 @@ impl HistoryRequest {
 mod tests {
     use super::*;
     use crate::app_backtrack::BacktrackState;
+    use crate::app_event::AppEvent;
     use crate::chatwidget::tests::make_chatwidget_manual_with_sender;
     use crate::file_search::FileSearchManager;
     use codex_core::AuthManager;
     use codex_core::CodexAuth;
     use codex_core::ConversationManager;
+    use codex_core::protocol::Event;
+    use codex_core::protocol::EventMsg;
+    use codex_core::protocol::Op;
+    use codex_core::protocol::SessionConfiguredEvent;
+    use codex_protocol::mcp_protocol::ConversationId;
     use ratatui::text::Line;
+    use std::fs;
+    use std::path::PathBuf;
     use std::sync::Arc;
     use std::sync::atomic::AtomicBool;
+    use tempfile::TempPath;
+    use tokio::runtime::Runtime;
+    use tokio::sync::mpsc::UnboundedReceiver;
 
-    fn make_test_app() -> App {
-        let (chat_widget, app_event_tx, _rx, _op_rx) = make_chatwidget_manual_with_sender();
+    fn make_test_app_with_channels() -> (App, UnboundedReceiver<AppEvent>, UnboundedReceiver<Op>) {
+        let (chat_widget, app_event_tx, rx, op_rx) = make_chatwidget_manual_with_sender();
         let config = chat_widget.config_ref().clone();
 
         let server = Arc::new(ConversationManager::with_auth(CodexAuth::from_api_key(
@@ -922,7 +933,7 @@ mod tests {
             AuthManager::from_auth_for_testing(CodexAuth::from_api_key("Test API Key"));
         let file_search = FileSearchManager::new(config.cwd.clone(), app_event_tx.clone());
 
-        App {
+        let app = App {
             server,
             app_event_tx,
             chat_widget,
@@ -938,7 +949,52 @@ mod tests {
             commit_anim_running: Arc::new(AtomicBool::new(false)),
             backtrack: BacktrackState::default(),
             pending_history_request: None,
-        }
+        };
+
+        (app, rx, op_rx)
+    }
+
+    fn make_test_app() -> App {
+        let (app, _event_rx, _op_rx) = make_test_app_with_channels();
+        app
+    }
+
+    fn drain_app_events(rx: &mut UnboundedReceiver<AppEvent>) {
+        while rx.try_recv().is_ok() {}
+    }
+
+    fn drain_ops(rx: &mut UnboundedReceiver<Op>) {
+        while rx.try_recv().is_ok() {}
+    }
+
+    fn configure_session(app: &mut App, conversation_id: ConversationId) -> TempPath {
+        let rollout = tempfile::NamedTempFile::new().expect("create rollout temp file");
+        let temp_path = rollout.into_temp_path();
+        let event = SessionConfiguredEvent {
+            session_id: conversation_id,
+            model: "test-model".to_string(),
+            reasoning_effort: None,
+            history_log_id: 0,
+            history_entry_count: 0,
+            initial_messages: None,
+            rollout_path: temp_path.to_path_buf(),
+        };
+        app.chat_widget.handle_codex_event(Event {
+            id: "session-configured".to_string(),
+            msg: EventMsg::SessionConfigured(event),
+        });
+        temp_path
+    }
+
+    fn line(text: &str) -> Line<'static> {
+        text.to_string().into()
+    }
+
+    fn line_to_string(line: &Line<'_>) -> String {
+        line.spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect()
     }
 
     #[test]
@@ -958,5 +1014,152 @@ mod tests {
             app.chat_widget.config_ref().model_reasoning_effort,
             Some(ReasoningEffortConfig::High)
         );
+    }
+
+    #[test]
+    fn pop_last_turn_sets_pending_request() {
+        let (mut app, mut event_rx, mut op_rx) = make_test_app_with_channels();
+        let conversation_id = ConversationId::new();
+        let _rollout = configure_session(&mut app, conversation_id);
+        drain_app_events(&mut event_rx);
+        drain_ops(&mut op_rx);
+
+        app.transcript_lines = vec![
+            line("user"),
+            line("question to drop"),
+            line(""),
+            line("assistant"),
+            line("an answer"),
+            line(""),
+        ];
+
+        let rt = Runtime::new().expect("create runtime");
+        rt.block_on(app.handle_pop_last_turn())
+            .expect("pop last turn");
+
+        match app.pending_history_request {
+            Some(HistoryRequest::Pop {
+                conversation_id: id,
+                drop_count,
+            }) => {
+                assert_eq!(id, conversation_id);
+                assert_eq!(drop_count, 1);
+            }
+            _ => panic!("expected pending pop request"),
+        }
+
+        let op = op_rx.try_recv().expect("expected GetPath op");
+        assert!(matches!(op, Op::GetPath));
+    }
+
+    #[test]
+    fn retry_last_turn_captures_message_text() {
+        let (mut app, mut event_rx, mut op_rx) = make_test_app_with_channels();
+        let conversation_id = ConversationId::new();
+        let _rollout = configure_session(&mut app, conversation_id);
+        drain_app_events(&mut event_rx);
+        drain_ops(&mut op_rx);
+
+        app.transcript_lines = vec![
+            line("user"),
+            line("retry this please"),
+            line(""),
+            line("assistant"),
+            line("earlier answer"),
+            line(""),
+        ];
+
+        let rt = Runtime::new().expect("create runtime");
+        rt.block_on(app.handle_retry_last_turn())
+            .expect("retry last turn");
+
+        match app.pending_history_request {
+            Some(HistoryRequest::Retry {
+                conversation_id: id,
+                drop_count,
+                ref message,
+            }) => {
+                assert_eq!(id, conversation_id);
+                assert_eq!(drop_count, 1);
+                assert_eq!(message, "retry this please");
+            }
+            _ => panic!("expected pending retry request"),
+        }
+
+        let op = op_rx.try_recv().expect("expected GetPath op");
+        assert!(matches!(op, Op::GetPath));
+    }
+
+    #[test]
+    fn save_checkpoint_builds_target_path() {
+        let (mut app, mut event_rx, mut op_rx) = make_test_app_with_channels();
+        let conversation_id = ConversationId::new();
+        let _rollout = configure_session(&mut app, conversation_id);
+        drain_app_events(&mut event_rx);
+        drain_ops(&mut op_rx);
+
+        let temp_dir = tempfile::tempdir().expect("create temp codex home");
+        app.config.codex_home = temp_dir.path().to_path_buf();
+
+        let rt = Runtime::new().expect("create runtime");
+        rt.block_on(app.handle_save_checkpoint())
+            .expect("save checkpoint");
+
+        let target = match app.pending_history_request {
+            Some(HistoryRequest::Save { ref target, .. }) => target.clone(),
+            _ => panic!("expected save request"),
+        };
+
+        assert!(target.starts_with(temp_dir.path()));
+        assert!(target.extension().and_then(|s| s.to_str()) == Some("jsonl"));
+
+        let op = op_rx.try_recv().expect("expected GetPath op");
+        assert!(matches!(op, Op::GetPath));
+    }
+
+    #[test]
+    fn export_transcript_writes_markdown_snapshot() {
+        let (mut app, mut event_rx, _op_rx) = make_test_app_with_channels();
+        app.transcript_lines = vec![
+            line("user"),
+            line("export this message"),
+            line(""),
+            line("assistant"),
+            line("response body"),
+            line(""),
+        ];
+
+        drain_app_events(&mut event_rx);
+
+        let rt = Runtime::new().expect("create runtime");
+        rt.block_on(app.export_transcript())
+            .expect("export transcript");
+
+        let mut exported_path: Option<PathBuf> = None;
+        while let Ok(event) = event_rx.try_recv() {
+            if let AppEvent::InsertHistoryCell(cell) = event {
+                let line_text = cell
+                    .display_lines(120)
+                    .first()
+                    .map(line_to_string)
+                    .unwrap_or_default();
+                if let Some((_, path_part)) = line_text
+                    .trim_start_matches("> ")
+                    .split_once("Exported transcript to ")
+                {
+                    exported_path = Some(PathBuf::from(path_part.trim()));
+                    break;
+                }
+            }
+        }
+
+        let exported_path = exported_path.expect("expected export path in info message");
+        assert!(exported_path.exists(), "export file should exist");
+        let contents = fs::read_to_string(&exported_path).expect("read export file");
+        assert!(contents.contains("# Codex Transcript Export"));
+        assert!(contents.contains("export this message"));
+        assert!(contents.contains("response body"));
+
+        fs::remove_file(exported_path).expect("clean up export file");
     }
 }
