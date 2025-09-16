@@ -871,6 +871,21 @@ impl ChatWidget {
                 self.clear_token_usage();
                 self.app_event_tx.send(AppEvent::CodexOp(Op::Compact));
             }
+            SlashCommand::Pop => {
+                self.app_event_tx.send(AppEvent::PopLastTurn);
+            }
+            SlashCommand::Retry => {
+                self.app_event_tx.send(AppEvent::RetryLastTurn);
+            }
+            SlashCommand::Save => {
+                self.app_event_tx.send(AppEvent::SaveCheckpoint);
+            }
+            SlashCommand::Load => {
+                self.app_event_tx.send(AppEvent::OpenLoadSaves);
+            }
+            SlashCommand::Export => {
+                self.app_event_tx.send(AppEvent::ExportTranscript);
+            }
             SlashCommand::Model => {
                 self.open_model_popup();
             }
@@ -1318,6 +1333,17 @@ impl ChatWidget {
             Some("Press Enter to confirm or Esc to go back".to_string()),
             items,
         );
+    }
+
+    pub(crate) fn open_saved_sessions_popup(
+        &mut self,
+        title: String,
+        subtitle: Option<String>,
+        hint: Option<String>,
+        items: Vec<SelectionItem>,
+    ) {
+        self.bottom_pane
+            .show_selection_view(title, subtitle, hint, items);
     }
 
     /// Set the approval policy in the widget's config copy.

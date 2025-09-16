@@ -1,6 +1,7 @@
 use codex_core::protocol::ConversationPathResponseEvent;
 use codex_core::protocol::Event;
 use codex_file_search::FileMatch;
+use std::path::PathBuf;
 
 use crate::history_cell::HistoryCell;
 
@@ -18,6 +19,26 @@ pub(crate) enum AppEvent {
 
     /// Request to exit the application gracefully.
     ExitRequest,
+
+    /// Remove the most recent user turn (and associated agent responses) from context.
+    PopLastTurn,
+
+    /// Remove the most recent agent responses and resend the last user turn.
+    RetryLastTurn,
+
+    /// Export the current conversation transcript to a file.
+    ExportTranscript,
+
+    /// Save the current conversation state to a checkpoint file.
+    SaveCheckpoint,
+
+    /// Present a picker for loading a previously saved checkpoint.
+    OpenLoadSaves,
+
+    /// Load a conversation from a saved checkpoint at the provided path.
+    LoadSavedConversation {
+        path: PathBuf,
+    },
 
     /// Forward an `Op` to the Agent. Using an `AppEvent` for this avoids
     /// bubbling channels through layers of widgets.
