@@ -1096,6 +1096,122 @@ async fn thread_rollback_drops_last_turn_from_history() {
 }
 
 #[tokio::test]
+async fn new_turn_refreshes_project_docs_each_round() {
+    let (tx_event, _rx_event) = async_channel::unbounded();
+    let codex_home = tempfile::tempdir().expect("create temp dir");
+    let workspace = tempfile::tempdir().expect("create workspace");
+    std::fs::write(
+        workspace.path().join("AGENTS.md"),
+        "first instructions",
+    )
+    .expect("write initial agents");
+
+    let mut config = build_test_config(codex_home.path()).await;
+    config.cwd = workspace.path().to_path_buf();
+    let config = Arc::new(config);
+    let auth_manager = AuthManager::from_auth_for_testing(CodexAuth::from_api_key("Test API Key"));
+    let models_manager = Arc::new(ModelsManager::new(
+        config.codex_home.clone(),
+        auth_manager.clone(),
+        None,
+        CollaborationModesConfig::default(),
+    ));
+    let agent_control = AgentControl::default();
+    let exec_policy = ExecPolicyManager::default();
+    let (agent_status_tx, _agent_status_rx) = watch::channel(AgentStatus::PendingInit);
+    let model = ModelsManager::get_model_offline_for_tests(config.model.as_deref());
+    let model_info = ModelsManager::construct_model_info_offline_for_tests(model.as_str(), &config);
+    let reasoning_effort = config.model_reasoning_effort;
+    let collaboration_mode = CollaborationMode {
+        mode: ModeKind::Default,
+        settings: Settings {
+            model,
+            reasoning_effort,
+            developer_instructions: None,
+        },
+    };
+    let session_configuration = SessionConfiguration {
+        provider: config.model_provider.clone(),
+        collaboration_mode,
+        model_reasoning_summary: config.model_reasoning_summary,
+        developer_instructions: config.developer_instructions.clone(),
+        user_instructions: None,
+        service_tier: None,
+        personality: config.personality,
+        base_instructions: config
+            .base_instructions
+            .clone()
+            .unwrap_or_else(|| model_info.get_model_instructions(config.personality)),
+        compact_prompt: config.compact_prompt.clone(),
+        approval_policy: config.permissions.approval_policy.clone(),
+        sandbox_policy: config.permissions.sandbox_policy.clone(),
+        file_system_sandbox_policy: config.permissions.file_system_sandbox_policy.clone(),
+        network_sandbox_policy: config.permissions.network_sandbox_policy,
+        windows_sandbox_level: WindowsSandboxLevel::from_config(&config),
+        cwd: config.cwd.clone(),
+        codex_home: config.codex_home.clone(),
+        thread_name: None,
+        original_config_do_not_use: Arc::clone(&config),
+        metrics_service_name: None,
+        app_server_client_name: None,
+        session_source: SessionSource::Exec,
+        dynamic_tools: Vec::new(),
+        persist_extended_history: false,
+        inherited_shell_snapshot: None,
+    };
+    let plugins_manager = Arc::new(PluginsManager::new(config.codex_home.clone()));
+    let mcp_manager = Arc::new(McpManager::new(Arc::clone(&plugins_manager)));
+    let skills_manager = Arc::new(SkillsManager::new(
+        config.codex_home.clone(),
+        Arc::clone(&plugins_manager),
+    ));
+    let file_watcher = Arc::new(FileWatcher::noop());
+
+    let session = Session::new(
+        session_configuration,
+        Arc::clone(&config),
+        auth_manager,
+        models_manager,
+        exec_policy,
+        tx_event,
+        agent_status_tx,
+        InitialHistory::New,
+        SessionSource::Exec,
+        skills_manager,
+        plugins_manager,
+        mcp_manager,
+        file_watcher,
+        agent_control,
+    )
+    .await
+    .expect("session");
+
+    let first_turn = session.new_default_turn().await;
+    assert!(
+        first_turn
+            .user_instructions
+            .as_deref()
+            .is_some_and(|instructions| instructions.contains("first instructions")),
+        "expected first turn to include initial AGENTS.md"
+    );
+
+    std::fs::write(
+        workspace.path().join("AGENTS.md"),
+        "second instructions",
+    )
+    .expect("update agents");
+
+    let second_turn = session.new_default_turn().await;
+    assert!(
+        second_turn
+            .user_instructions
+            .as_deref()
+            .is_some_and(|instructions| instructions.contains("second instructions")),
+        "expected second turn to include updated AGENTS.md"
+    );
+}
+
+#[tokio::test]
 async fn thread_rollback_clears_history_when_num_turns_exceeds_existing_turns() {
     let (sess, tc, rx) = make_session_and_context_with_rx().await;
     attach_rollout_recorder(&sess).await;

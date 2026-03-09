@@ -43,6 +43,7 @@ use codex_core::auth::ExternalAuthRefreshContext;
 use codex_core::auth::ExternalAuthRefreshReason;
 use codex_core::auth::ExternalAuthRefresher;
 use codex_core::auth::ExternalAuthTokens;
+use codex_core::auth::auth_storage_home;
 use codex_core::config::Config;
 use codex_core::config_loader::CloudRequirementsLoader;
 use codex_core::config_loader::LoaderOverrides;
@@ -180,7 +181,7 @@ impl MessageProcessor {
             enable_codex_api_key_env,
         } = args;
         let auth_manager = AuthManager::shared(
-            config.codex_home.clone(),
+            auth_storage_home(&config.codex_home, config.active_profile.as_deref()),
             enable_codex_api_key_env,
             config.cli_auth_credentials_store_mode,
         );

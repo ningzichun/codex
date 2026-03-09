@@ -6009,6 +6009,37 @@ async fn slash_clear_is_disabled_while_task_running() {
 }
 
 #[tokio::test]
+async fn slash_pop_submits_thread_rollback() {
+    let (mut chat, _rx, mut op_rx) = make_chatwidget_manual(None).await;
+    chat.dispatch_command(SlashCommand::Pop);
+
+    assert_matches!(
+        op_rx.try_recv(),
+        Ok(Op::ThreadRollback { num_turns: 1 })
+    );
+}
+
+#[tokio::test]
+async fn slash_pop_is_disabled_while_task_running() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(None).await;
+    chat.bottom_pane.set_task_running(true);
+
+    chat.dispatch_command(SlashCommand::Pop);
+
+    let event = rx.try_recv().expect("expected disabled command error");
+    match event {
+        AppEvent::InsertHistoryCell(cell) => {
+            let rendered = lines_to_single_string(&cell.display_lines(80));
+            assert!(
+                rendered.contains("'/pop' is disabled while a task is in progress."),
+                "expected /pop task-running error, got {rendered:?}"
+            );
+        }
+        other => panic!("expected InsertHistoryCell error, got {other:?}"),
+    }
+}
+
+#[tokio::test]
 async fn slash_memory_drop_submits_drop_memories_op() {
     let (mut chat, _rx, mut op_rx) = make_chatwidget_manual(None).await;
 

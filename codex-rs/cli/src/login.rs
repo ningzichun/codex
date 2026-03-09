@@ -11,6 +11,7 @@ use codex_core::CodexAuth;
 use codex_core::auth::AuthCredentialsStoreMode;
 use codex_core::auth::AuthMode;
 use codex_core::auth::CLIENT_ID;
+use codex_core::auth::auth_storage_home;
 use codex_core::auth::login_with_api_key;
 use codex_core::auth::logout;
 use codex_core::config::Config;
@@ -110,6 +111,10 @@ fn print_login_server_start(actual_port: u16, auth_url: &str) {
     );
 }
 
+fn login_auth_home(config: &Config) -> PathBuf {
+    auth_storage_home(&config.codex_home, config.active_profile.as_deref())
+}
+
 pub async fn login_with_chatgpt(
     codex_home: PathBuf,
     forced_chatgpt_workspace_id: Option<String>,
@@ -139,9 +144,10 @@ pub async fn run_login_with_chatgpt(cli_config_overrides: CliConfigOverrides) ->
     }
 
     let forced_chatgpt_workspace_id = config.forced_chatgpt_workspace_id.clone();
+    let auth_home = login_auth_home(&config);
 
     match login_with_chatgpt(
-        config.codex_home,
+        auth_home,
         forced_chatgpt_workspace_id,
         config.cli_auth_credentials_store_mode,
     )
@@ -171,11 +177,8 @@ pub async fn run_login_with_api_key(
         std::process::exit(1);
     }
 
-    match login_with_api_key(
-        &config.codex_home,
-        &api_key,
-        config.cli_auth_credentials_store_mode,
-    ) {
+    let auth_home = login_auth_home(&config);
+    match login_with_api_key(&auth_home, &api_key, config.cli_auth_credentials_store_mode) {
         Ok(_) => {
             eprintln!("{LOGIN_SUCCESS_MESSAGE}");
             std::process::exit(0);
@@ -228,8 +231,9 @@ pub async fn run_login_with_device_code(
         std::process::exit(1);
     }
     let forced_chatgpt_workspace_id = config.forced_chatgpt_workspace_id.clone();
+    let auth_home = login_auth_home(&config);
     let mut opts = ServerOptions::new(
-        config.codex_home,
+        auth_home,
         client_id.unwrap_or(CLIENT_ID.to_string()),
         forced_chatgpt_workspace_id,
         config.cli_auth_credentials_store_mode,
@@ -267,8 +271,9 @@ pub async fn run_login_with_device_code_fallback_to_browser(
     }
 
     let forced_chatgpt_workspace_id = config.forced_chatgpt_workspace_id.clone();
+    let auth_home = login_auth_home(&config);
     let mut opts = ServerOptions::new(
-        config.codex_home,
+        auth_home,
         client_id.unwrap_or(CLIENT_ID.to_string()),
         forced_chatgpt_workspace_id,
         config.cli_auth_credentials_store_mode,
@@ -315,8 +320,9 @@ pub async fn run_login_with_device_code_fallback_to_browser(
 
 pub async fn run_login_status(cli_config_overrides: CliConfigOverrides) -> ! {
     let config = load_config_or_exit(cli_config_overrides).await;
+    let auth_home = login_auth_home(&config);
 
-    match CodexAuth::from_auth_storage(&config.codex_home, config.cli_auth_credentials_store_mode) {
+    match CodexAuth::from_auth_storage(&auth_home, config.cli_auth_credentials_store_mode) {
         Ok(Some(auth)) => match auth.auth_mode() {
             AuthMode::ApiKey => match auth.get_token() {
                 Ok(api_key) => {
@@ -346,8 +352,9 @@ pub async fn run_login_status(cli_config_overrides: CliConfigOverrides) -> ! {
 
 pub async fn run_logout(cli_config_overrides: CliConfigOverrides) -> ! {
     let config = load_config_or_exit(cli_config_overrides).await;
+    let auth_home = login_auth_home(&config);
 
-    match logout(&config.codex_home, config.cli_auth_credentials_store_mode) {
+    match logout(&auth_home, config.cli_auth_credentials_store_mode) {
         Ok(true) => {
             eprintln!("Successfully logged out");
             std::process::exit(0);

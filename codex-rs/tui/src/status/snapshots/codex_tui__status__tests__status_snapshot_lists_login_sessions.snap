@@ -1,0 +1,23 @@
+---
+source: tui/src/status/tests.rs
+expression: sanitized
+---
+/status
+
+╭───────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│  >_ OpenAI Codex (v0.0.0)                                                                                     │
+│                                                                                                               │
+│ Visit https://chatgpt.com/codex/settings/usage for up-to-date                                                 │
+│ information on rate limits and credits                                                                        │
+│                                                                                                               │
+│  Model:            gpt-5.1-codex (reasoning none, summaries auto)                                             │
+│  Login sessions:   backup: Backup - https://backup.example/v1 • backup@example.com (Plus) • 5h limit 38% left │
+│                    work (current): OpenAI • work@example.com (Pro) • 5h limit 72% left                        │
+│  Directory: [[workspace]]                                                                                     │
+│  Permissions:      Custom (read-only, on-request)                                                             │
+│  Agents.md:        <none>                                                                                     │
+│  Account:          work@example.com (Unknown)                                                                 │
+│                                                                                                               │
+│  Context window:   100% left (1.5K used / 272K)                                                               │
+│  5h limit:         [██████████████░░░░░░] 72% left (resets 04:20)                                             │
+╰───────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
