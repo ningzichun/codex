@@ -4,7 +4,9 @@ use crate::history_cell::HistoryCell;
 use chrono::Duration as ChronoDuration;
 use chrono::TimeZone;
 use chrono::Utc;
+use base64::Engine;
 use codex_core::AuthManager;
+use codex_core::auth::auth_storage_home;
 use codex_core::config::Config;
 use codex_core::config::ConfigBuilder;
 use codex_protocol::ThreadId;
@@ -20,6 +22,7 @@ use codex_protocol::protocol::TokenUsageInfo;
 use insta::assert_snapshot;
 use pretty_assertions::assert_eq;
 use ratatui::prelude::*;
+use serde_json::json;
 use std::path::PathBuf;
 use tempfile::TempDir;
 
@@ -33,7 +36,7 @@ async fn test_config(temp_home: &TempDir) -> Config {
 
 fn test_auth_manager(config: &Config) -> AuthManager {
     AuthManager::new(
-        config.codex_home.clone(),
+        auth_storage_home(&config.codex_home, config.active_profile.as_deref()),
         false,
         config.cli_auth_credentials_store_mode,
     )
@@ -88,6 +91,84 @@ fn reset_at_from(captured_at: &chrono::DateTime<chrono::Local>, seconds: i64) ->
     (*captured_at + ChronoDuration::seconds(seconds))
         .with_timezone(&Utc)
         .timestamp()
+}
+
+fn write_chatgpt_auth(home: &std::path::Path, email: &str, plan: &str) {
+    #[derive(serde::Serialize)]
+    struct Header {
+        alg: &'static str,
+        typ: &'static str,
+    }
+
+    let auth_payload = json!({
+        "chatgpt_user_id": "user-12345",
+        "user_id": "user-12345",
+        "chatgpt_plan_type": plan,
+    });
+    let payload = json!({
+        "email": email,
+        "email_verified": true,
+        "https://api.openai.com/auth": auth_payload,
+    });
+    let encode = |bytes: &[u8]| base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes);
+    let header = Header {
+        alg: "none",
+        typ: "JWT",
+    };
+    let header_b64 = encode(&serde_json::to_vec(&header).expect("header"));
+    let payload_b64 = encode(&serde_json::to_vec(&payload).expect("payload"));
+    let signature_b64 = encode(b"sig");
+    let fake_jwt = format!("{header_b64}.{payload_b64}.{signature_b64}");
+
+    std::fs::create_dir_all(home).expect("create auth dir");
+    std::fs::write(
+        home.join("auth.json"),
+        serde_json::to_string_pretty(&json!({
+            "OPENAI_API_KEY": null,
+            "tokens": {
+                "id_token": fake_jwt,
+                "access_token": "test-access-token",
+                "refresh_token": "",
+                "account_id": "workspace-123",
+            },
+            "last_refresh": "2025-01-01T00:00:00Z",
+        }))
+        .expect("serialize auth"),
+    )
+    .expect("write auth");
+}
+
+fn write_rate_limit_cache(
+    home: &std::path::Path,
+    captured_at: chrono::DateTime<chrono::Local>,
+    limit_id: &str,
+    used_percent: f64,
+) {
+    std::fs::create_dir_all(home).expect("create rate limit dir");
+    std::fs::write(
+        home.join("rate_limits.json"),
+        serde_json::to_string_pretty(&json!({
+            "snapshots": {
+                limit_id: {
+                    "captured_at": captured_at.with_timezone(&Utc).to_rfc3339(),
+                    "snapshot": {
+                        "limit_id": limit_id,
+                        "limit_name": limit_id,
+                        "primary": {
+                            "used_percent": used_percent,
+                            "window_minutes": 300,
+                            "resets_at": reset_at_from(&captured_at, 1800),
+                        },
+                        "secondary": serde_json::Value::Null,
+                        "credits": serde_json::Value::Null,
+                        "plan_type": serde_json::Value::Null,
+                    }
+                }
+            }
+        }))
+        .expect("serialize rate limits"),
+    )
+    .expect("write rate limits");
 }
 
 #[tokio::test]
@@ -167,6 +248,88 @@ async fn status_snapshot_includes_reasoning_details() {
             *line = line.replace('\\', "/");
         }
     }
+    let sanitized = sanitize_directory(rendered_lines).join("\n");
+    assert_snapshot!(sanitized);
+}
+
+#[tokio::test]
+async fn status_snapshot_lists_login_sessions() {
+    let temp_home = TempDir::new().expect("temp home");
+    std::fs::write(
+        temp_home.path().join("config.toml"),
+        r#"
+model = "gpt-5.1-codex"
+model_provider = "openai"
+profile = "work"
+
+[profiles.work]
+model_provider = "openai"
+
+[profiles.backup]
+model_provider = "backup"
+
+[model_providers.backup]
+name = "Backup"
+base_url = "https://backup.example/v1"
+requires_openai_auth = true
+"#,
+    )
+    .expect("write config");
+
+    let mut config = test_config(&temp_home).await;
+    config.model = Some("gpt-5.1-codex".to_string());
+    config.cwd = PathBuf::from("/workspace/tests");
+
+    let captured_at = chrono::Local
+        .with_ymd_and_hms(2024, 2, 3, 4, 5, 6)
+        .single()
+        .expect("timestamp");
+    let work_home = auth_storage_home(&config.codex_home, Some("work"));
+    let backup_home = auth_storage_home(&config.codex_home, Some("backup"));
+    write_chatgpt_auth(&work_home, "work@example.com", "pro");
+    write_chatgpt_auth(&backup_home, "backup@example.com", "plus");
+    write_rate_limit_cache(&backup_home, captured_at, "codex", 62.0);
+
+    let auth_manager = test_auth_manager(&config);
+    let usage = TokenUsage {
+        input_tokens: 900,
+        cached_input_tokens: 100,
+        output_tokens: 500,
+        reasoning_output_tokens: 0,
+        total_tokens: 1_500,
+    };
+    let snapshot = RateLimitSnapshot {
+        limit_id: Some("codex".to_string()),
+        limit_name: Some("codex".to_string()),
+        primary: Some(RateLimitWindow {
+            used_percent: 28.0,
+            window_minutes: Some(300),
+            resets_at: Some(reset_at_from(&captured_at, 900)),
+        }),
+        secondary: None,
+        credits: None,
+        plan_type: None,
+    };
+    let rate_display = rate_limit_snapshot_display(&snapshot, captured_at);
+    let model_slug = codex_core::test_support::get_model_offline(config.model.as_deref());
+    let token_info = token_info_for(&model_slug, &config, &usage);
+
+    let composite = new_status_output(
+        &config,
+        &auth_manager,
+        Some(&token_info),
+        &usage,
+        &None,
+        None,
+        None,
+        Some(&rate_display),
+        None,
+        captured_at,
+        &model_slug,
+        None,
+        None,
+    );
+    let rendered_lines = render_lines(&composite.display_lines(120));
     let sanitized = sanitize_directory(rendered_lines).join("\n");
     assert_snapshot!(sanitized);
 }

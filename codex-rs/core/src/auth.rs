@@ -377,6 +377,18 @@ pub fn read_codex_api_key_from_env() -> Option<String> {
         .filter(|value| !value.is_empty())
 }
 
+/// Returns the directory used to store auth state for the active login session.
+///
+/// The default session keeps using `CODEX_HOME` so existing installs continue to
+/// work unchanged. Named config profiles store their auth state under
+/// `CODEX_HOME/profiles/<profile>` so users can keep separate logins per profile.
+pub fn auth_storage_home(codex_home: &Path, active_profile: Option<&str>) -> PathBuf {
+    match active_profile.map(str::trim).filter(|profile| !profile.is_empty()) {
+        Some(profile) => codex_home.join("profiles").join(profile),
+        None => codex_home.to_path_buf(),
+    }
+}
+
 /// Delete the auth.json file inside `codex_home` if it exists. Returns `Ok(true)`
 /// if a file was removed, `Ok(false)` if no auth file was present.
 pub fn logout(

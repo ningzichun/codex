@@ -32,6 +32,7 @@ use super::helpers::compose_agents_summary;
 use super::helpers::compose_model_display;
 use super::helpers::format_directory_display;
 use super::helpers::format_tokens_compact;
+use super::load_login_session_lines;
 use super::rate_limits::RateLimitSnapshotDisplay;
 use super::rate_limits::StatusRateLimitData;
 use super::rate_limits::StatusRateLimitRow;
@@ -68,6 +69,7 @@ struct StatusHistoryCell {
     agents_summary: String,
     collaboration_mode: Option<String>,
     model_provider: Option<String>,
+    login_session_lines: Vec<String>,
     account: Option<StatusAccountDisplay>,
     thread_name: Option<String>,
     session_id: Option<String>,
@@ -227,6 +229,7 @@ impl StatusHistoryCell {
         };
         let agents_summary = compose_agents_summary(config);
         let model_provider = format_model_provider(config);
+        let login_session_lines = load_login_session_lines(config, rate_limits, now);
         let account = compose_account_display(auth_manager, plan_type);
         let session_id = session_id.as_ref().map(std::string::ToString::to_string);
         let forked_from = forked_from.map(|id| id.to_string());
@@ -261,6 +264,7 @@ impl StatusHistoryCell {
             agents_summary,
             collaboration_mode: collaboration_mode.map(ToString::to_string),
             model_provider,
+            login_session_lines,
             account,
             thread_name,
             session_id,
@@ -447,6 +451,9 @@ impl HistoryCell for StatusHistoryCell {
         if self.model_provider.is_some() {
             push_label(&mut labels, &mut seen, "Model provider");
         }
+        if !self.login_session_lines.is_empty() {
+            push_label(&mut labels, &mut seen, "Login sessions");
+        }
         if account_value.is_some() {
             push_label(&mut labels, &mut seen, "Account");
         }
@@ -501,6 +508,15 @@ impl HistoryCell for StatusHistoryCell {
         lines.push(formatter.line("Model", model_spans));
         if let Some(model_provider) = self.model_provider.as_ref() {
             lines.push(formatter.line("Model provider", vec![Span::from(model_provider.clone())]));
+        }
+        if let Some(first_login_session) = self.login_session_lines.first() {
+            lines.push(formatter.line(
+                "Login sessions",
+                vec![Span::from(first_login_session.clone())],
+            ));
+            for login_session in self.login_session_lines.iter().skip(1) {
+                lines.push(formatter.continuation(vec![Span::from(login_session.clone())]));
+            }
         }
         lines.push(formatter.line("Directory", vec![Span::from(directory_value)]));
         lines.push(formatter.line("Permissions", vec![Span::from(self.permissions.clone())]));

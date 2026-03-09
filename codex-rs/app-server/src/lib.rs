@@ -3,6 +3,7 @@
 use codex_arg0::Arg0DispatchPaths;
 use codex_cloud_requirements::cloud_requirements_loader;
 use codex_core::AuthManager;
+use codex_core::auth::auth_storage_home;
 use codex_core::config::Config;
 use codex_core::config::ConfigBuilder;
 use codex_core::config_loader::CloudRequirementsLoader;
@@ -414,7 +415,7 @@ pub async fn run_main_with_transport(
             }
 
             let auth_manager = AuthManager::shared(
-                config.codex_home.clone(),
+                auth_storage_home(&config.codex_home, config.active_profile.as_deref()),
                 false,
                 config.cli_auth_credentials_store_mode,
             );

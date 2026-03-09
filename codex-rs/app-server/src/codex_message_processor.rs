@@ -184,6 +184,7 @@ use codex_core::ThreadManager;
 use codex_core::ThreadSortKey as CoreThreadSortKey;
 use codex_core::auth::AuthMode as CoreAuthMode;
 use codex_core::auth::CLIENT_ID;
+use codex_core::auth::auth_storage_home;
 use codex_core::auth::login_with_api_key;
 use codex_core::auth::login_with_chatgpt_auth_tokens;
 use codex_core::config::Config;
@@ -940,7 +941,10 @@ impl CodexMessageProcessor {
         }
 
         match login_with_api_key(
-            &self.config.codex_home,
+            &auth_storage_home(
+                &self.config.codex_home,
+                self.config.active_profile.as_deref(),
+            ),
             &params.api_key,
             self.config.cli_auth_credentials_store_mode,
         ) {
@@ -1010,7 +1014,7 @@ impl CodexMessageProcessor {
         Ok(LoginServerOptions {
             open_browser: false,
             ..LoginServerOptions::new(
-                config.codex_home.clone(),
+                auth_storage_home(&config.codex_home, config.active_profile.as_deref()),
                 CLIENT_ID.to_string(),
                 config.forced_chatgpt_workspace_id.clone(),
                 config.cli_auth_credentials_store_mode,
@@ -1212,7 +1216,10 @@ impl CodexMessageProcessor {
         }
 
         if let Err(err) = login_with_chatgpt_auth_tokens(
-            &self.config.codex_home,
+            &auth_storage_home(
+                &self.config.codex_home,
+                self.config.active_profile.as_deref(),
+            ),
             &access_token,
             &chatgpt_account_id,
             chatgpt_plan_type.as_deref(),

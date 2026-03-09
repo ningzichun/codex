@@ -47,6 +47,7 @@ use crate::bottom_pane::StatusLineSetupView;
 use crate::status::RateLimitWindowDisplay;
 use crate::status::format_directory_display;
 use crate::status::format_tokens_compact;
+use crate::status::persist_active_session_rate_limit_snapshot;
 use crate::status::rate_limit_snapshot_display_for_limit;
 use crate::text_formatting::proper_join;
 use crate::version::CODEX_CLI_VERSION;
@@ -1878,10 +1879,12 @@ impl ChatWidget {
                 self.rate_limit_switch_prompt = RateLimitSwitchPromptState::Pending;
             }
 
+            let captured_at = Local::now();
             let display =
-                rate_limit_snapshot_display_for_limit(&snapshot, limit_label, Local::now());
+                rate_limit_snapshot_display_for_limit(&snapshot, limit_label, captured_at);
             self.rate_limit_snapshots_by_limit_id
                 .insert(limit_id, display);
+            persist_active_session_rate_limit_snapshot(&self.config, &snapshot, captured_at);
 
             if !warnings.is_empty() {
                 for warning in warnings {

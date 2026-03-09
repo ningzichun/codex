@@ -38,6 +38,7 @@ use codex_app_server_protocol::ServerRequestPayload;
 use codex_app_server_protocol::experimental_required_message;
 use codex_arg0::Arg0DispatchPaths;
 use codex_core::AuthManager;
+use codex_core::auth::auth_storage_home;
 use codex_core::ThreadManager;
 use codex_core::auth::ExternalAuthRefreshContext;
 use codex_core::auth::ExternalAuthRefreshReason;
@@ -180,7 +181,7 @@ impl MessageProcessor {
             enable_codex_api_key_env,
         } = args;
         let auth_manager = AuthManager::shared(
-            config.codex_home.clone(),
+            auth_storage_home(&config.codex_home, config.active_profile.as_deref()),
             enable_codex_api_key_env,
             config.cli_auth_credentials_store_mode,
         );

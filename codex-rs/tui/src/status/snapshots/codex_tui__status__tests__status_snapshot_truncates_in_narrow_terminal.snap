@@ -11,6 +11,7 @@ expression: sanitized
 │ information on rate limits and credits                             │
 │                                                                    │
 │  Model:            gpt-5.1-codex-max (reasoning high, summaries de │
+│  Login sessions:   default (current): OpenAI • not logged in • 5h  │
 │  Directory: [[workspace]]                                          │
 │  Permissions:      Custom (read-only, on-request)                  │
 │  Agents.md:        <none>                                          │

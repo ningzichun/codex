@@ -14,6 +14,7 @@ use codex_core::INTERACTIVE_SESSION_SOURCES;
 use codex_core::RolloutRecorder;
 use codex_core::ThreadSortKey;
 use codex_core::auth::AuthMode;
+use codex_core::auth::auth_storage_home;
 use codex_core::auth::enforce_login_restrictions;
 use codex_core::check_execpolicy_for_warnings;
 use codex_core::config::Config;
@@ -317,7 +318,10 @@ pub async fn run_main(mut cli: Cli, arg0_paths: Arg0DispatchPaths) -> std::io::R
     }
 
     let cloud_auth_manager = AuthManager::shared(
-        codex_home.to_path_buf(),
+        auth_storage_home(
+            &codex_home,
+            cli.config_profile.as_deref().or(config_toml.profile.as_deref()),
+        ),
         false,
         config_toml.cli_auth_credentials_store.unwrap_or_default(),
     );
@@ -581,7 +585,10 @@ async fn run_ratatui_app(
     session_log::maybe_init(&initial_config);
 
     let auth_manager = AuthManager::shared(
-        initial_config.codex_home.clone(),
+        auth_storage_home(
+            &initial_config.codex_home,
+            initial_config.active_profile.as_deref(),
+        ),
         false,
         initial_config.cli_auth_credentials_store_mode,
     );
@@ -1102,8 +1109,8 @@ fn get_login_status(config: &Config) -> LoginStatus {
     if config.model_provider.requires_openai_auth {
         // Reading the OpenAI API key is an async operation because it may need
         // to refresh the token. Block on it.
-        let codex_home = config.codex_home.clone();
-        match CodexAuth::from_auth_storage(&codex_home, config.cli_auth_credentials_store_mode) {
+        let auth_home = auth_storage_home(&config.codex_home, config.active_profile.as_deref());
+        match CodexAuth::from_auth_storage(&auth_home, config.cli_auth_credentials_store_mode) {
             Ok(Some(auth)) => LoginStatus::AuthMode(auth.auth_mode()),
             Ok(None) => LoginStatus::NotAuthenticated,
             Err(err) => {
