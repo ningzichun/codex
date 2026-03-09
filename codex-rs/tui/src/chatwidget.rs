@@ -1884,7 +1884,15 @@ impl ChatWidget {
                 rate_limit_snapshot_display_for_limit(&snapshot, limit_label, captured_at);
             self.rate_limit_snapshots_by_limit_id
                 .insert(limit_id, display);
-            persist_active_session_rate_limit_snapshot(&self.config, &snapshot, captured_at);
+            let config = self.config.clone();
+            let snapshot_for_persist = snapshot.clone();
+            let _persist_rate_limits = tokio::task::spawn_blocking(move || {
+                persist_active_session_rate_limit_snapshot(
+                    &config,
+                    &snapshot_for_persist,
+                    captured_at,
+                );
+            });
 
             if !warnings.is_empty() {
                 for warning in warnings {
@@ -3928,6 +3936,9 @@ impl ChatWidget {
             SlashCommand::Compact => {
                 self.clear_token_usage();
                 self.app_event_tx.send(AppEvent::CodexOp(Op::Compact));
+            }
+            SlashCommand::Pop => {
+                self.submit_op(Op::ThreadRollback { num_turns: 1 });
             }
             SlashCommand::Review => {
                 self.open_review_popup();

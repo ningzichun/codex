@@ -22,7 +22,12 @@ use std::fs;
 use std::path::Path;
 
 const RATE_LIMITS_FILE: &str = "rate_limits.json";
-const DEFAULT_LOGIN_SESSION_NAME: &str = "default";
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+enum LoginSessionKey {
+    Legacy,
+    Profile(String),
+}
 
 #[derive(Debug, Default, Deserialize)]
 struct SessionStatusConfigToml {
@@ -109,13 +114,17 @@ pub(crate) fn load_login_session_lines(
     now: DateTime<Local>,
 ) -> Vec<String> {
     let config_toml = load_session_status_config(config.codex_home.join(CONFIG_TOML_FILE));
-    let active_session_name = config
+    let has_profile_named_default = config_toml
+        .as_ref()
+        .is_some_and(|toml| toml.profiles.contains_key("default"));
+    let active_session_key = config
         .active_profile
         .clone()
-        .unwrap_or_else(|| DEFAULT_LOGIN_SESSION_NAME.to_string());
+        .map(LoginSessionKey::Profile)
+        .unwrap_or(LoginSessionKey::Legacy);
 
     let mut sessions = BTreeMap::from([(
-        DEFAULT_LOGIN_SESSION_NAME.to_string(),
+        LoginSessionKey::Legacy,
         config_toml
             .as_ref()
             .and_then(|toml| toml.model_provider.clone())
@@ -128,20 +137,21 @@ pub(crate) fn load_login_session_lines(
                 .clone()
                 .or_else(|| toml.model_provider.clone())
                 .unwrap_or_else(|| "openai".to_string());
-            sessions.insert(profile.clone(), provider_id);
+            sessions.insert(LoginSessionKey::Profile(profile.clone()), provider_id);
         }
     }
     sessions
-        .entry(active_session_name.clone())
+        .entry(active_session_key.clone())
         .or_insert_with(|| config.model_provider_id.clone());
 
     let mut lines = Vec::new();
-    for (session_name, provider_id) in sessions {
-        let is_active = session_name == active_session_name;
-        let auth_home = if session_name == DEFAULT_LOGIN_SESSION_NAME {
-            auth_storage_home(&config.codex_home, None)
-        } else {
-            auth_storage_home(&config.codex_home, Some(&session_name))
+    for (session_key, provider_id) in sessions {
+        let is_active = session_key == active_session_key;
+        let auth_home = match &session_key {
+            LoginSessionKey::Legacy => auth_storage_home(&config.codex_home, None),
+            LoginSessionKey::Profile(profile) => {
+                auth_storage_home(&config.codex_home, Some(profile))
+            }
         };
         let auth = CodexAuth::from_auth_storage(&auth_home, config.cli_auth_credentials_store_mode)
             .ok()
@@ -174,7 +184,7 @@ pub(crate) fn load_login_session_lines(
         };
 
         let summary = LoginSessionSummary {
-            name: session_name,
+            name: session_name_label(&session_key, has_profile_named_default),
             is_active,
             provider,
             account: auth
@@ -294,6 +304,14 @@ fn format_login_session_summary(session: &LoginSessionSummary) -> String {
         "{}{}: {} • {} • {}",
         session.name, current, session.provider, session.account, session.limits
     )
+}
+
+fn session_name_label(session_key: &LoginSessionKey, has_profile_named_default: bool) -> String {
+    match session_key {
+        LoginSessionKey::Legacy if has_profile_named_default => "default (legacy)".to_string(),
+        LoginSessionKey::Legacy => "default".to_string(),
+        LoginSessionKey::Profile(profile) => profile.clone(),
+    }
 }
 
 fn sanitize_base_url(base_url: Option<&str>) -> Option<String> {

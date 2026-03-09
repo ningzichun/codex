@@ -9,6 +9,7 @@ use serde::Serialize;
 use serial_test::serial;
 use std::env;
 use std::fmt::Debug;
+use std::path::Component;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -383,9 +384,17 @@ pub fn read_codex_api_key_from_env() -> Option<String> {
 /// work unchanged. Named config profiles store their auth state under
 /// `CODEX_HOME/profiles/<profile>` so users can keep separate logins per profile.
 pub fn auth_storage_home(codex_home: &Path, active_profile: Option<&str>) -> PathBuf {
+    fn normalized_profile_component(profile: &str) -> Option<&str> {
+        let trimmed = profile.trim();
+        let mut components = Path::new(trimmed).components();
+        match (components.next(), components.next()) {
+            (Some(Component::Normal(_)), None) => Some(trimmed),
+            _ => None,
+        }
+    }
+
     match active_profile
-        .map(str::trim)
-        .filter(|profile| !profile.is_empty())
+        .and_then(normalized_profile_component)
     {
         Some(profile) => codex_home.join("profiles").join(profile),
         None => codex_home.to_path_buf(),
@@ -460,8 +469,9 @@ pub fn load_auth_dot_json(
 }
 
 pub fn enforce_login_restrictions(config: &Config) -> std::io::Result<()> {
+    let auth_home = auth_storage_home(&config.codex_home, config.active_profile.as_deref());
     let Some(auth) = load_auth(
-        &config.codex_home,
+        &auth_home,
         true,
         config.cli_auth_credentials_store_mode,
     )?
@@ -485,7 +495,7 @@ pub fn enforce_login_restrictions(config: &Config) -> std::io::Result<()> {
 
         if let Some(message) = method_violation {
             return logout_with_message(
-                &config.codex_home,
+                &auth_home,
                 message,
                 config.cli_auth_credentials_store_mode,
             );
@@ -501,7 +511,7 @@ pub fn enforce_login_restrictions(config: &Config) -> std::io::Result<()> {
             Ok(data) => data,
             Err(err) => {
                 return logout_with_message(
-                    &config.codex_home,
+                    &auth_home,
                     format!(
                         "Failed to load ChatGPT credentials while enforcing workspace restrictions: {err}. Logging out."
                     ),
@@ -522,7 +532,7 @@ pub fn enforce_login_restrictions(config: &Config) -> std::io::Result<()> {
                 ),
             };
             return logout_with_message(
-                &config.codex_home,
+                &auth_home,
                 message,
                 config.cli_auth_credentials_store_mode,
             );
@@ -1741,6 +1751,49 @@ mod tests {
         assert!(
             err.to_string()
                 .contains("ChatGPT login is required, but an API key is currently being used.")
+        );
+    }
+
+    #[test]
+    fn auth_storage_home_rejects_non_normal_profile_names() {
+        let codex_home = Path::new("/tmp/codex-home");
+
+        assert_eq!(
+            super::auth_storage_home(codex_home, Some("team-profile")),
+            codex_home.join("profiles").join("team-profile")
+        );
+        assert_eq!(
+            super::auth_storage_home(codex_home, Some("../escape")),
+            codex_home
+        );
+        assert_eq!(
+            super::auth_storage_home(codex_home, Some("nested/profile")),
+            codex_home
+        );
+        assert_eq!(super::auth_storage_home(codex_home, Some(".")), codex_home);
+    }
+
+    #[tokio::test]
+    async fn enforce_login_restrictions_uses_active_profile_auth_home() {
+        let codex_home = tempdir().unwrap();
+        let profile_auth_home = super::auth_storage_home(codex_home.path(), Some("work"));
+        login_with_api_key(&profile_auth_home, "sk-test", AuthCredentialsStoreMode::File)
+            .expect("seed api key");
+
+        let mut config =
+            build_config(codex_home.path(), Some(ForcedLoginMethod::Chatgpt), None).await;
+        config.active_profile = Some("work".to_string());
+
+        let err = super::enforce_login_restrictions(&config)
+            .expect_err("expected method mismatch to error");
+        assert!(err.to_string().contains("ChatGPT login is required"));
+        assert!(
+            !profile_auth_home.join("auth.json").exists(),
+            "profile auth.json should be removed on mismatch"
+        );
+        assert!(
+            !codex_home.path().join("auth.json").exists(),
+            "legacy auth.json should remain absent"
         );
     }
 

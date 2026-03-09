@@ -29,6 +29,7 @@ pub enum SlashCommand {
     Fork,
     Init,
     Compact,
+    Pop,
     Plan,
     Collab,
     Agent,
@@ -70,6 +71,7 @@ impl SlashCommand {
             SlashCommand::New => "start a new chat during a conversation",
             SlashCommand::Init => "create an AGENTS.md file with instructions for Codex",
             SlashCommand::Compact => "summarize conversation to prevent hitting the context limit",
+            SlashCommand::Pop => "remove the most recent user/assistant exchange",
             SlashCommand::Review => "review my current changes and find issues",
             SlashCommand::Rename => "rename the current thread",
             SlashCommand::Resume => "resume a saved chat",
@@ -138,6 +140,7 @@ impl SlashCommand {
             | SlashCommand::Fork
             | SlashCommand::Init
             | SlashCommand::Compact
+            | SlashCommand::Pop
             // | SlashCommand::Undo
             | SlashCommand::Model
             | SlashCommand::Fast
@@ -194,4 +197,21 @@ pub fn built_in_slash_commands() -> Vec<(&'static str, SlashCommand)> {
         .filter(|command| command.is_visible())
         .map(|c| (c.command(), c))
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pretty_assertions::assert_eq;
+
+    #[test]
+    fn built_in_commands_include_pop() {
+        assert_eq!(
+            built_in_slash_commands()
+                .into_iter()
+                .find(|(name, _)| *name == "pop")
+                .map(|(_, command)| command),
+            Some(SlashCommand::Pop)
+        );
+    }
 }

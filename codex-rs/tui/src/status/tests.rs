@@ -335,6 +335,67 @@ requires_openai_auth = true
 }
 
 #[tokio::test]
+async fn status_uses_profile_named_default_instead_of_legacy_session() {
+    let temp_home = TempDir::new().expect("temp home");
+    std::fs::write(
+        temp_home.path().join("config.toml"),
+        r#"
+model = "gpt-5.1-codex"
+model_provider = "openai"
+profile = "default"
+
+[profiles.default]
+model_provider = "openai"
+"#,
+    )
+    .expect("write config");
+
+    let mut config = test_config(&temp_home).await;
+    config.model = Some("gpt-5.1-codex".to_string());
+    config.cwd = PathBuf::from("/workspace/tests");
+
+    write_chatgpt_auth(
+        &config.codex_home,
+        "legacy@example.com",
+        "plus",
+    );
+    write_chatgpt_auth(
+        &auth_storage_home(&config.codex_home, Some("default")),
+        "profile@example.com",
+        "pro",
+    );
+
+    let auth_manager = test_auth_manager(&config);
+    let usage = TokenUsage::default();
+    let model_slug = codex_core::test_support::get_model_offline(config.model.as_deref());
+    let composite = new_status_output(
+        &config,
+        &auth_manager,
+        None,
+        &usage,
+        &None,
+        None,
+        None,
+        None,
+        None,
+        chrono::Local::now(),
+        &model_slug,
+        None,
+        None,
+    );
+    let rendered = sanitize_directory(render_lines(&composite.display_lines(120))).join("\n");
+
+    assert!(
+        rendered.contains("default (current): OpenAI • profile@example.com"),
+        "expected current profile session to be shown, got: {rendered}"
+    );
+    assert!(
+        rendered.contains("default (legacy): openai • legacy@example.com"),
+        "expected legacy session to be disambiguated when profile name is `default`, got: {rendered}"
+    );
+}
+
+#[tokio::test]
 async fn status_permissions_non_default_workspace_write_is_custom() {
     let temp_home = TempDir::new().expect("temp home");
     let mut config = test_config(&temp_home).await;

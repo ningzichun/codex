@@ -2183,11 +2183,29 @@ impl Session {
     async fn new_turn_from_configuration(
         &self,
         sub_id: String,
-        session_configuration: SessionConfiguration,
+        mut session_configuration: SessionConfiguration,
         final_output_json_schema: Option<Option<Value>>,
         sandbox_policy_changed: bool,
     ) -> Arc<TurnContext> {
         let per_turn_config = Self::build_per_turn_config(&session_configuration);
+        let loaded_plugins = self
+            .services
+            .plugins_manager
+            .plugins_for_config(&per_turn_config);
+        let skills_outcome = Arc::new(
+            self.services
+                .skills_manager
+                .skills_for_cwd(&session_configuration.cwd, false)
+                .await,
+        );
+        let allowed_skills_for_implicit_invocation =
+            skills_outcome.allowed_skills_for_implicit_invocation();
+        session_configuration.user_instructions = get_user_instructions(
+            &per_turn_config,
+            Some(&allowed_skills_for_implicit_invocation),
+            Some(loaded_plugins.capability_summaries()),
+        )
+        .await;
         self.services
             .mcp_connection_manager
             .read()
@@ -2223,12 +2241,6 @@ impl Session {
                 &per_turn_config,
             )
             .await;
-        let skills_outcome = Arc::new(
-            self.services
-                .skills_manager
-                .skills_for_cwd(&session_configuration.cwd, false)
-                .await,
-        );
         let mut turn_context: TurnContext = Self::make_turn_context(
             Some(Arc::clone(&self.services.auth_manager)),
             &self.services.session_telemetry,
