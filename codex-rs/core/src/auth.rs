@@ -383,7 +383,10 @@ pub fn read_codex_api_key_from_env() -> Option<String> {
 /// work unchanged. Named config profiles store their auth state under
 /// `CODEX_HOME/profiles/<profile>` so users can keep separate logins per profile.
 pub fn auth_storage_home(codex_home: &Path, active_profile: Option<&str>) -> PathBuf {
-    match active_profile.map(str::trim).filter(|profile| !profile.is_empty()) {
+    match active_profile
+        .map(str::trim)
+        .filter(|profile| !profile.is_empty())
+    {
         Some(profile) => codex_home.join("profiles").join(profile),
         None => codex_home.to_path_buf(),
     }

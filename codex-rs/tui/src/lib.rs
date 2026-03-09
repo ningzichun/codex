@@ -320,7 +320,9 @@ pub async fn run_main(mut cli: Cli, arg0_paths: Arg0DispatchPaths) -> std::io::R
     let cloud_auth_manager = AuthManager::shared(
         auth_storage_home(
             &codex_home,
-            cli.config_profile.as_deref().or(config_toml.profile.as_deref()),
+            cli.config_profile
+                .as_deref()
+                .or(config_toml.profile.as_deref()),
         ),
         false,
         config_toml.cli_auth_credentials_store.unwrap_or_default(),

@@ -178,11 +178,7 @@ pub async fn run_login_with_api_key(
     }
 
     let auth_home = login_auth_home(&config);
-    match login_with_api_key(
-        &auth_home,
-        &api_key,
-        config.cli_auth_credentials_store_mode,
-    ) {
+    match login_with_api_key(&auth_home, &api_key, config.cli_auth_credentials_store_mode) {
         Ok(_) => {
             eprintln!("{LOGIN_SUCCESS_MESSAGE}");
             std::process::exit(0);

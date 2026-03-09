@@ -221,7 +221,11 @@ fn load_stored_rate_limits_file(path: &Path) -> Option<StoredRateLimitSnapshots>
     serde_json::from_str(&contents).ok()
 }
 
-fn format_provider_summary(provider_id: &str, name: Option<&str>, base_url: Option<&str>) -> String {
+fn format_provider_summary(
+    provider_id: &str,
+    name: Option<&str>,
+    base_url: Option<&str>,
+) -> String {
     let provider_name = name
         .map(str::trim)
         .filter(|name| !name.is_empty())

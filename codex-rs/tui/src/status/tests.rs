@@ -1,10 +1,10 @@
 use super::new_status_output;
 use super::rate_limit_snapshot_display;
 use crate::history_cell::HistoryCell;
+use base64::Engine;
 use chrono::Duration as ChronoDuration;
 use chrono::TimeZone;
 use chrono::Utc;
-use base64::Engine;
 use codex_core::AuthManager;
 use codex_core::auth::auth_storage_home;
 use codex_core::config::Config;
