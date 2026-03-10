@@ -302,8 +302,8 @@ pnpm add -g @openai/codex
 <summary><strong>Build from source</strong></summary>
 
 ```bash
-# Clone the repository and navigate to the CLI package
-git clone https://github.com/openai/codex.git
+# Clone this fork and navigate to the CLI package
+git clone https://github.com/ningzichun/codex.git
 cd codex/codex-cli
 
 # Enable corepack
@@ -325,6 +325,9 @@ node ./dist/cli.js
 # Or link the command globally for convenience
 pnpm link
 ```
+
+The npm packages install the upstream OpenAI release. Build from this fork when
+you specifically want the custom changes in `ningzichun/codex`.
 
 </details>
 

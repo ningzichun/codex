@@ -15,8 +15,8 @@ The GitHub Release also contains a [DotSlash](https://dotslash-cli.com/) file fo
 ### Build from source
 
 ```bash
-# Clone the repository and navigate to the root of the Cargo workspace.
-git clone https://github.com/openai/codex.git
+# Clone this fork and navigate to the root of the Cargo workspace.
+git clone https://github.com/ningzichun/codex.git
 cd codex/codex-rs
 
 # Install the Rust toolchain, if necessary.
@@ -48,6 +48,10 @@ just test
 # If you specifically want full feature coverage, use:
 cargo test --all-features
 ```
+
+Package manager installs and the upstream GitHub Releases still provide the
+official OpenAI build. Build from this repository when you want the
+fork-specific changes from `ningzichun/codex`.
 
 ## Tracing / verbose logging
 

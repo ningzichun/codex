@@ -26,6 +26,15 @@ npm install -g @openai/codex
 brew install --cask codex
 ```
 
+These installers currently publish the upstream OpenAI build. If you want this
+fork's changes specifically, clone and build `ningzichun/codex` instead:
+
+```shell
+git clone https://github.com/ningzichun/codex.git
+cd codex/codex-rs
+cargo run --bin codex
+```
+
 Then simply run `codex` to get started.
 
 <details>
